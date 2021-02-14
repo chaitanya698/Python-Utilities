@@ -8,3 +8,11 @@
 
 # json_to_csv.py:
   This can be used to parse the JSON file and extract the data to CSV file.
+
+
+
+
+
+# Note: 
+There is a OCR utility which can be used to extract the data from PDF/Image/TIFF files.
+Lot of additions yet to come, Please follow and keep watchhing. :)
