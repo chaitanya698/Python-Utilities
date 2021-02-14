@@ -14,5 +14,6 @@
 
 
 # Note: 
-There is a OCR utility which can be used to extract the data from PDF/Image/TIFF files.
+Next addition: OCR utility which can be used to extract the data from PDF/Image/TIFF files.
+&
 Lot of additions yet to come, Please follow and keep watchhing. :)
