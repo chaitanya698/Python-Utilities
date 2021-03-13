@@ -1,14 +1,3 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[ ]:
-
-
-
-
-
-# In[ ]:
-
 
 import pandas as pd
 import pandas
@@ -393,16 +382,4 @@ if __name__ == '__main__':
     write_differences(fname,Sheets_changed,rows_changed,discrepancies,cols_changed,Status,rep_name)    
     add_formatting(fname)
     remove_blank_sheets(fname,Sheets_changed)
-
-
-# In[ ]:
-
-
-
-
-
-# In[ ]:
-
-
-
 
