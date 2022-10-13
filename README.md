@@ -1,8 +1,8 @@
 # Python-Utilities
 
-Excel Comparision Utility:
-  a. Two excels with same order of rows
-  b. Two excels with different order of rows
+Excel Comparision Utility: <br>
+  a. Two excels with same order of rows <br>
+  b. Two excels with different order of rows <br>
 
 Text_Replace_Utility
 
