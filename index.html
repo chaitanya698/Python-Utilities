@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Comparison Tool</title>
+    <style>
+        :root {
+            --primary-color: #4285F4;
+            --success-color: #34A853;
+            --warning-color: #FBBC05;
+            --danger-color: #EA4335;
+            --light-color: #F8F9FA;
+            --dark-color: #212529;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: var(--dark-color);
+            margin: 0;
+            padding: 0;
+            background-color: #F5F5F5;
+            display: flex;
+            min-height: 100vh;
+            flex-direction: column;
+        }
+        
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: white;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            flex: 1;
+        }
+        
+        header {
+            background-color: var(--primary-color);
+            color: white;
+            padding: 20px;
+            margin-bottom: 30px;
+            border-radius: 5px;
+            text-align: center;
+        }
+        
+        h1, h2, h3 {
+            margin-top: 0;
+        }
+        
+        footer {
+            margin-top: 40px;
+            padding: 15px;
+            background-color: var(--dark-color);
+            color: white;
+            text-align: center;
+        }
+        
+        .upload-form {
+            background-color: white;
+            border-radius: 5px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 500;
+        }
+        
+        .input-file {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background-color: var(--light-color);
+        }
+        
+        .btn {
+            display: inline-block;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            text-align: center;
+            transition: background-color 0.3s, transform 0.2s;
+        }
+        
+        .btn-primary {
+            background-color: var(--primary-color);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background-color: #3367d6;
+            transform: translateY(-2px);
+        }
+        
+        .btn-block {
+            display: block;
+            width: 100%;
+        }
+        
+        .result-section {
+            display: none;
+            background-color: white;
+            border-radius: 5px;
+            padding: 20px;
+            margin-top: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .result-card {
+            border: 1px solid #eee;
+            border-radius: 4px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        
+        .summary-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        
+        .stat-item {
+            background-color: var(--light-color);
+            border-radius: 4px;
+            padding: 15px;
+            text-align: center;
+        }
+        
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: var(--primary-color);
+            margin: 5px 0;
+        }
+        
+        .stat-label {
+            font-size: 14px;
+            color: #666;
+        }
+        
+        .report-link {
+            display: inline-block;
+            margin-top: 20px;
+            padding: 10px 20px;
+            background-color: var(--success-color);
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            font-weight: 500;
+            transition: background-color 0.3s, transform 0.2s;
+        }
+        
+        .report-link:hover {
+            background-color: #2d9448;
+            transform: translateY(-2px);
+        }
+        
+        .alert {
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 4px;
+            color: white;
+        }
+        
+        .alert-success {
+            background-color: var(--success-color);
+        }
+        
+        .alert-error {
+            background-color: var(--danger-color);
+        }
+        
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+        
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border-left-color: var(--primary-color);
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+            margin: 30px 0;
+        }
+        
+        .feature-card {
+            background-color: white;
+            border-radius: 5px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .feature-title {
+            color: var(--primary-color);
+            font-size: 18px;
+            margin-bottom: 10px;
+        }
+        
+        .feature-card ul {
+            padding-left: 20px;
+        }
+        
+        @media (max-width: 768px) {
+            .summary-stats {
+                grid-template-columns: 1fr 1fr;
+            }
+            
+            .features {
+                grid-template-columns: 1fr;
+            }
+        }
+        
+        @media (max-width: 480px) {
+            .summary-stats {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>PDF Comparison Tool</h1>
+            <p>Compare PDFs with advanced table and text detection</p>
+        </header>
+        
+        <div class="upload-form">
+            <h2>Upload PDFs for Comparison</h2>
+            <form id="upload-form" enctype="multipart/form-data">
+                <div class="form-group">
+                    <label for="pdf1">First PDF:</label>
+                    <input type="file" id="pdf1" name="pdf1" accept=".pdf" class="input-file" required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="pdf2">Second PDF:</label>
+                    <input type="file" id="pdf2" name="pdf2" accept=".pdf" class="input-file" required>
+                </div>
+                
+                <button type="submit" class="btn btn-primary btn-block">Compare PDFs</button>
+            </form>
+        </div>
+        
+        <div id="loading" class="loading">
+            <div class="spinner"></div>
+            <p>Comparing PDFs... This may take a few moments.</p>
+        </div>
+        
+        <div id="alerts"></div>
+        
+        <div id="result-section" class="result-section">
+            <h2>Comparison Results</h2>
+            
+            <div class="summary-stats">
+                <div class="stat-item">
+                    <div class="stat-label">Pages with Differences</div>
+                    <div id="pages-diff" class="stat-value">0</div>
+                </div>
+                
+                <div class="stat-item">
+                    <div class="stat-label">Text Differences</div>
+                    <div id="text-diff" class="stat-value">0</div>
+                </div>
+                
+                <div class="stat-item">
+                    <div class="stat-label">Table Differences</div>
+                    <div id="table-diff" class="stat-value">0</div>
+                </div>
+                
+                <div class="stat-item">
+                    <div class="stat-label">Total Differences</div>
+                    <div id="total-diff" class="stat-value">0</div>
+                </div>
+            </div>
+            
+            <div class="result-card">
+                <h3>Files Compared</h3>
+                <p><strong>First PDF:</strong> <span id="file1-name"></span></p>
+                <p><strong>Second PDF:</strong> <span id="file2-name"></span></p>
+                <p><strong>Comparison Date:</strong> <span id="comparison-date"></span></p>
+            </div>
+            
+            <div class="text-center">
+                <a id="report-link" href="#" target="_blank" class="report-link">View Detailed Report</a>
+            </div>
+        </div>
+        
+        <div class="features">
+            <div class="feature-card">
+                <h3 class="feature-title">Advanced Table Detection</h3>
+                <ul>
+                    <li>Detects tables even without borders</li>
+                    <li>Handles multi-page tables</li>
+                    <li>Identifies nested tables</li>
+                    <li>Preserves table structures</li>
+                </ul>
+            </div>
+            
+            <div class="feature-card">
+                <h3 class="feature-title">Intelligent Comparison</h3>
+                <ul>
+                    <li>Content-based matching for tables</li>
+                    <li>Recognizes tables moved between pages</li>
+                    <li>Detailed cell-level differences</li>
+                    <li>Highlights specific text changes</li>
+                </ul>
+            </div>
+            
+            <div class="feature-card">
+                <h3 class="feature-title">Executive-Ready Reports</h3>
+                <ul>
+                    <li>Clean, visual side-by-side diffs</li>
+                    <li>Comprehensive summary statistics</li>
+                    <li>Color-coded differences</li>
+                    <li>Interactive navigation</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+    
+    <footer>
+        PDF Comparison Tool v2.0 | Developed by Advanced Document Intelligence Team
+    </footer>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const uploadForm = document.getElementById('upload-form');
+            const loading = document.getElementById('loading');
+            const resultSection = document.getElementById('result-section');
+            const alertsContainer = document.getElementById('alerts');
+            
+            uploadForm.addEventListener('submit', function(e) {
+                e.preventDefault();
+                
+                // Clear previous alerts
+                alertsContainer.innerHTML = '';
+                
+                // Show loading indicator
+                loading.style.display = 'block';
+                resultSection.style.display = 'none';
+                
+                // Prepare form data
+                const formData = new FormData(uploadForm);
+                
+                // Submit form
+                fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    // Hide loading
+                    loading.style.display = 'none';
+                    
+                    if (data.status === 'success') {
+                        // Show result
+                        resultSection.style.display = 'block';
+                        
+                        // Update statistics
+                        document.getElementById('pages-diff').textContent = data.result.pages_with_differences;
+                        document.getElementById('text-diff').textContent = data.result.text_differences;
+                        document.getElementById('table-diff').textContent = data.result.table_differences;
+                        document.getElementById('total-diff').textContent = data.result.total_differences;
+                        
+                        // Update file info
+                        document.getElementById('file1-name').textContent = data.result.filename1;
+                        document.getElementById('file2-name').textContent = data.result.filename2;
+                        document.getElementById('comparison-date').textContent = data.result.comparison_date;
+                        
+                        // Set report link
+                        document.getElementById('report-link').href = data.result.report_url;
+                        
+                        // Show success message
+                        const alert = document.createElement('div');
+                        alert.className = 'alert alert-success';
+                        alert.textContent = data.message;
+                        alertsContainer.appendChild(alert);
+                    } else {
+                        // Show error
+                        const alert = document.createElement('div');
+                        alert.className = 'alert alert-error';
+                        alert.textContent = data.message;
+                        alertsContainer.appendChild(alert);
+                    }
+                })
+                .catch(error => {
+                    // Hide loading
+                    loading.style.display = 'none';
+                    
+                    // Show error
+                    const alert = document.createElement('div');
+                    alert.className = 'alert alert-error';
+                    alert.textContent = 'An error occurred during comparison. Please try again.';
+                    alertsContainer.appendChild(alert);
+                    
+                    console.error('Error:', error);
+                });
+            });
+        });
+    </script>
+</body>
+</html>
