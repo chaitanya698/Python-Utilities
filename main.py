@@ -1,19 +1,23 @@
 """
 main.py - Enhanced PDF Comparison Tool
 --------------------------------------
-Integrates the improved modules for table detection and comparison
+Integrates the improved modules for table detection and comparison with
+parallel processing and progress tracking
 """
 import os
 import io
 import logging
 import tempfile
 import traceback
-from flask import Flask, request, render_template, send_file, jsonify, redirect, url_for
+import threading
+import uuid
+import json
+import time
+from flask import Flask, request, render_template, send_file, jsonify, redirect, url_for, current_app
 from werkzeug.utils import secure_filename
 from datetime import datetime
 
 # Import our enhanced modules
-# Note: Update these imports to match your folder structure
 from Extract import PDFExtractor
 from compare import PdfCompare
 from generate import ReportGenerator
@@ -33,8 +37,11 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = os.path.join(os.getcwd(), 'uploads')
 app.config['REPORT_FOLDER'] = os.path.join(os.getcwd(), 'reports')
-app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024  # 32MB max upload size
+app.config['MAX_CONTENT_LENGTH'] = 64 * 1024 * 1024  # 64MB max upload size (increased from 32MB)
 app.config['ALLOWED_EXTENSIONS'] = {'pdf'}
+
+# In-memory store for task tracking
+processing_tasks = {}
 
 # Create necessary directories
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -55,7 +62,7 @@ def index():
 
 @app.route('/upload', methods=['POST'])
 def upload_files():
-    """Handle file upload and start comparison process."""
+    """Enhanced file upload handler with progress reporting."""
     try:
         # Check if both files are present
         if 'pdf1' not in request.files or 'pdf2' not in request.files:
@@ -81,9 +88,10 @@ def upload_files():
                 'message': 'Only PDF files are allowed'
             }), 400
             
-        # Save files with secure filenames
-        filename1 = secure_filename(file1.filename)
-        filename2 = secure_filename(file2.filename)
+        # Save files with unique IDs to prevent filename collisions
+        unique_id = str(uuid.uuid4())
+        filename1 = f"{unique_id}_{secure_filename(file1.filename)}"
+        filename2 = f"{unique_id}_{secure_filename(file2.filename)}"
         
         filepath1 = os.path.join(app.config['UPLOAD_FOLDER'], filename1)
         filepath2 = os.path.join(app.config['UPLOAD_FOLDER'], filename2)
@@ -93,13 +101,37 @@ def upload_files():
         
         logger.info(f"Files uploaded: {filename1}, {filename2}")
         
-        # Process comparison
-        result = process_comparison(filepath1, filepath2, filename1, filename2)
+        # Create a task for tracking
+        task_id = str(uuid.uuid4())
+        
+        # Create report URL in advance (within application context)
+        # We'll use a placeholder for the report filename, which will be updated later
+        with app.app_context():
+            report_url_template = url_for('get_report', filename='PLACEHOLDER')
+            report_url_base = report_url_template.replace('PLACEHOLDER', '')
+        
+        # Store task info in memory
+        processing_tasks[task_id] = {
+            'status': 'processing',
+            'progress': 0,
+            'filepath1': filepath1,
+            'filepath2': filepath2,
+            'orig_filename1': file1.filename,
+            'orig_filename2': file2.filename,
+            'start_time': datetime.now().isoformat(),
+            'report_url_base': report_url_base  # Store the base URL for the report
+        }
+        
+        # Start background processing
+        threading.Thread(
+            target=process_comparison_with_progress,
+            args=(task_id, filepath1, filepath2, file1.filename, file2.filename, app)
+        ).start()
         
         return jsonify({
-            'status': 'success',
-            'message': 'Comparison completed',
-            'result': result
+            'status': 'processing',
+            'message': 'Comparison started',
+            'task_id': task_id
         })
         
     except Exception as e:
@@ -110,21 +142,14 @@ def upload_files():
         }), 500
 
 
-def process_comparison(filepath1, filepath2, filename1, filename2):
-    """
-    Process PDF comparison between two files with enhanced detection.
-    
-    Args:
-        filepath1: Path to first PDF
-        filepath2: Path to second PDF
-        filename1: Original name of first PDF
-        filename2: Original name of second PDF
-        
-    Returns:
-        Dictionary with comparison results and report metadata
-    """
+def process_comparison_with_progress(task_id, filepath1, filepath2, filename1, filename2, app_instance):
+    """Process PDF comparison with progress tracking."""
     try:
-        logger.info(f"Starting comparison between {filename1} and {filename2}")
+        logger.info(f"Starting comparison task {task_id} between {filename1} and {filename2}")
+        
+        # Update task progress
+        processing_tasks[task_id]['progress'] = 5
+        processing_tasks[task_id]['status_message'] = 'Extracting content from first PDF'
         
         # Read file contents
         with open(filepath1, 'rb') as f1, open(filepath2, 'rb') as f2:
@@ -136,27 +161,42 @@ def process_comparison(filepath1, filepath2, filename1, filename2):
             similarity_threshold=0.85,  # Threshold for table content similarity
             header_match_threshold=0.9,  # Threshold for header matching
             nested_table_threshold=0.85,  # Containment threshold for nested tables
-            nested_area_ratio=0.75       # Size ratio for nested tables
+            nested_area_ratio=0.75,      # Size ratio for nested tables
+            semantic_similarity_threshold=0.80  # Threshold for semantic matching
         )
         
         logger.info(f"Extracting content from {filename1}")
         pdf1_data = extractor.extract_pdf_content(pdf1_content)
         
+        # Update task progress
+        processing_tasks[task_id]['progress'] = 25
+        processing_tasks[task_id]['status_message'] = 'Extracting content from second PDF'
+        
         logger.info(f"Extracting content from {filename2}")
         pdf2_data = extractor.extract_pdf_content(pdf2_content)
+        
+        # Update task progress
+        processing_tasks[task_id]['progress'] = 50
+        processing_tasks[task_id]['status_message'] = 'Comparing PDFs'
         
         # Compare PDFs with improved matching algorithms
         logger.info("Comparing PDFs")
         comparer = PdfCompare(
-            diff_threshold=0.75,  # Threshold for table similarity
-            cell_match_threshold=0.9,  # Threshold for cell content matching
-            fuzzy_match_threshold=0.8  # Threshold for fuzzy text matching
+            diff_threshold=0.75,             # Threshold for table similarity
+            cell_match_threshold=0.9,        # Threshold for cell content matching
+            fuzzy_match_threshold=0.8,       # Threshold for fuzzy text matching
+            semantic_similarity_threshold=0.85,  # Threshold for semantic matching
+            max_workers=4                    # Parallel processing threads
         )
         comparison_results = comparer.compare_pdfs(pdf1_data, pdf2_data)
         
+        # Update task progress
+        processing_tasks[task_id]['progress'] = 75
+        processing_tasks[task_id]['status_message'] = 'Generating comparison report'
+        
         # Generate enhanced HTML report
         logger.info("Generating comparison report")
-        generator = ReportGenerator(output_dir=app.config['REPORT_FOLDER'])
+        generator = ReportGenerator(output_dir=app_instance.config['REPORT_FOLDER'])
         report_path = generator.generate_html_report(
             comparison_results,
             filename1,
@@ -174,6 +214,9 @@ def process_comparison(filepath1, filepath2, filename1, filename2):
         # Generate summary statistics
         summary = calculate_summary(comparison_results)
         
+        # Create report URL without using url_for() outside app context
+        report_url = processing_tasks[task_id]['report_url_base'] + report_filename
+        
         # Prepare detailed response data
         result = {
             'total_pages': comparison_results.get('max_pages', 0),
@@ -183,21 +226,52 @@ def process_comparison(filepath1, filepath2, filename1, filename2):
             'table_differences': summary['table_differences'],
             'filename1': filename1,
             'filename2': filename2,
-            'report_url': url_for('get_report', filename=report_filename),
+            'report_url': report_url,
             'report_filename': report_filename,
             'comparison_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
         
-        logger.info(f"Comparison completed successfully, report saved as {report_filename}")
-        return result
+        # Update task as completed
+        processing_tasks[task_id]['progress'] = 100
+        processing_tasks[task_id]['status'] = 'completed'
+        processing_tasks[task_id]['result'] = result
+        processing_tasks[task_id]['status_message'] = 'Comparison completed'
+        
+        logger.info(f"Comparison completed successfully for task {task_id}, report saved as {report_filename}")
+        
+        # Clean up temporary files after an hour
+        schedule_cleanup(filepath1, filepath2, 3600)  # 1 hour
         
     except Exception as e:
-        logger.error(f"Error in PDF comparison: {str(e)}", exc_info=True)
-        error_info = {
-            'error': str(e),
-            'traceback': traceback.format_exc()
-        }
-        raise Exception(f"PDF comparison failed: {str(e)}") from e
+        logger.error(f"Error in PDF comparison task {task_id}: {str(e)}", exc_info=True)
+        
+        # Update task as failed
+        processing_tasks[task_id]['status'] = 'failed'
+        processing_tasks[task_id]['error'] = str(e)
+        processing_tasks[task_id]['status_message'] = f'Error: {str(e)}'
+        
+        # Clean up immediately in case of error
+        try:
+            os.remove(filepath1)
+            os.remove(filepath2)
+        except:
+            pass
+
+
+def schedule_cleanup(file1, file2, delay):
+    """Schedule cleanup of temporary files after a delay."""
+    def cleanup():
+        time.sleep(delay)
+        try:
+            if os.path.exists(file1):
+                os.remove(file1)
+            if os.path.exists(file2):
+                os.remove(file2)
+            logger.info(f"Cleaned up temporary files: {file1}, {file2}")
+        except Exception as e:
+            logger.error(f"Error cleaning up files: {str(e)}")
+    
+    threading.Thread(target=cleanup).start()
 
 
 def calculate_summary(comparison_results):
@@ -241,6 +315,25 @@ def calculate_summary(comparison_results):
     }
 
 
+@app.route('/status/<task_id>')
+def get_task_status(task_id):
+    """Get the status of a processing task."""
+    if task_id not in processing_tasks:
+        return jsonify({
+            'status': 'error',
+            'message': 'Task not found'
+        }), 404
+    
+    task = processing_tasks[task_id]
+    
+    return jsonify({
+        'status': task['status'],
+        'progress': task['progress'],
+        'status_message': task.get('status_message', ''),
+        'result': task.get('result', None)
+    })
+
+
 @app.route('/reports/<filename>')
 def get_report(filename):
     """Serve generated comparison report."""
@@ -263,7 +356,7 @@ def api_compare():
     API endpoint for PDF comparison.
     
     Expects two PDF files to be uploaded: 'pdf1' and 'pdf2'.
-    Returns JSON with comparison results.
+    Returns JSON with task ID for status tracking.
     """
     try:
         # Check if both files are present
@@ -290,6 +383,14 @@ def api_compare():
                 'message': 'Only PDF files are allowed'
             }), 400
             
+        # Create unique task ID
+        task_id = str(uuid.uuid4())
+        
+        # Create report URL in advance (within application context)
+        with app.app_context():
+            report_url_template = url_for('get_report', filename='PLACEHOLDER')
+            report_url_base = report_url_template.replace('PLACEHOLDER', '')
+            
         # Create temporary files
         with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp1, \
              tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp2:
@@ -297,25 +398,115 @@ def api_compare():
             file1.save(temp1.name)
             file2.save(temp2.name)
             
-            # Process files
-            result = process_comparison(
-                temp1.name,
-                temp2.name,
-                secure_filename(file1.filename),
-                secure_filename(file2.filename)
-            )
+            # Store task info
+            processing_tasks[task_id] = {
+                'status': 'processing',
+                'progress': 0,
+                'filepath1': temp1.name,
+                'filepath2': temp2.name,
+                'orig_filename1': secure_filename(file1.filename),
+                'orig_filename2': secure_filename(file2.filename),
+                'start_time': datetime.now().isoformat(),
+                'is_api': True,  # Mark as API task
+                'report_url_base': report_url_base  # Store the base URL for the report
+            }
             
-            # Clean up temporary files
-            os.unlink(temp1.name)
-            os.unlink(temp2.name)
+            # Start background processing
+            threading.Thread(
+                target=process_comparison_with_progress,
+                args=(task_id, temp1.name, temp2.name, file1.filename, file2.filename, app)
+            ).start()
             
             return jsonify({
-                'status': 'success',
-                'result': result
+                'status': 'processing',
+                'message': 'Comparison started',
+                'task_id': task_id
             })
             
     except Exception as e:
         logger.error(f"API error: {str(e)}", exc_info=True)
+        return jsonify({
+            'status': 'error',
+            'message': f'An error occurred: {str(e)}'
+        }), 500
+
+
+@app.route('/api/async-result/<task_id>')
+def get_async_result(task_id):
+    """Get result of asynchronous task."""
+    if task_id not in processing_tasks:
+        return jsonify({
+            'status': 'error',
+            'message': 'Task not found'
+        }), 404
+    
+    task = processing_tasks[task_id]
+    
+    if task['status'] == 'completed':
+        return jsonify({
+            'status': 'success',
+            'result': task.get('result')
+        })
+    elif task['status'] == 'failed':
+        return jsonify({
+            'status': 'error',
+            'message': task.get('error', 'Unknown error')
+        }), 500
+    else:
+        return jsonify({
+            'status': 'processing',
+            'progress': task['progress'],
+            'message': task.get('status_message', 'Processing...')
+        })
+
+
+@app.route('/api/report-data/<filename>')
+def get_report_data(filename):
+    """
+    API endpoint to get the raw JSON data behind a report.
+    Useful for external tools or custom visualizations.
+    """
+    try:
+        # Parse the report HTML to extract the JSON data
+        report_path = os.path.join(app.config['REPORT_FOLDER'], filename)
+        
+        if not os.path.exists(report_path):
+            return jsonify({
+                'status': 'error',
+                'message': 'Report not found'
+            }), 404
+            
+        # Extract raw data based on filename pattern
+        parts = filename.split('_vs_')
+        if len(parts) < 2:
+            return jsonify({
+                'status': 'error',
+                'message': 'Invalid report filename format'
+            }), 400
+            
+        pdf1_name = parts[0]
+        # Second part contains pdf2_name and timestamp
+        pdf2_timestamp = parts[1].split('_')
+        pdf2_name = '_'.join(pdf2_timestamp[:-2]) if len(pdf2_timestamp) > 2 else pdf2_timestamp[0]
+        
+        # Find the corresponding task that generated this report
+        for task_id, task in processing_tasks.items():
+            if task.get('status') == 'completed' and task.get('result'):
+                if task['orig_filename1'] in pdf1_name and task['orig_filename2'] in pdf2_name:
+                    # Return the raw result data
+                    return jsonify({
+                        'status': 'success',
+                        'data': task['result']
+                    })
+        
+        # If no matching task found, return error
+        return jsonify({
+            'status': 'error',
+            'message': 'Report data not found'
+        }), 404
+            
+    except Exception as e:
+        logger.error(f"Error retrieving report data: {str(e)}", exc_info=True)
         return jsonify({
             'status': 'error',
             'message': f'An error occurred: {str(e)}'
@@ -327,7 +518,7 @@ def request_entity_too_large(error):
     """Handle file size exceeded error."""
     return jsonify({
         'status': 'error',
-        'message': f'File size exceeded maximum limit (32MB)'
+        'message': f'File size exceeded maximum limit (64MB)'
     }), 413
 
 
