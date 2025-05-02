@@ -4,16 +4,21 @@ generate.py - Enhanced report builder
 Improvements:
 * Better visualization of nested tables
 * Enhanced side-by-side diff for tables
+* Color-coded differences (modified: red, new: blue, similar: green)
 * Improved summary statistics
 * Interactive UI elements
 * Support for multi-page tables
+* Clearer visual distinction for differences
+* Side-by-side comparison of both PDFs
 """
 import os
 import re
 import logging
 import json
+import hashlib
 from datetime import datetime
-from typing import Dict, Optional, List, Any
+from typing import Dict, Optional, List, Any, Tuple, Set
+from collections import defaultdict
 from jinja2 import Template
 
 logger = logging.getLogger(__name__)
@@ -24,6 +29,7 @@ class ReportGenerator:
     def __init__(self, output_dir="reports"):
         os.makedirs(output_dir, exist_ok=True)
         self.output_dir = output_dir
+        self.table_registry = {}
 
     # ─── public ───────────────────────────────────────────────────
     def generate_html_report(self, results: Dict,
@@ -43,14 +49,20 @@ class ReportGenerator:
         """
         logger.info("Generating HTML comparison report")
         
+        # Build table registry for nested table visualization
+        self._build_table_registry(results)
+        
+        # Pre-process results to enhance nested table visualization
+        processed_results = self._preprocess_nested_tables(results)
+        
         # Calculate summary statistics
-        summary = self._generate_summary(results)
+        summary = self._generate_summary(processed_results)
         
         # Render HTML template
-        html = self._render(results, pdf1_name, pdf2_name, metadata or {}, summary)
+        html = self._render(processed_results, pdf1_name, pdf2_name, metadata or {}, summary)
         
         # Create unique filename
-        filename = f"compare_{self._safe(pdf1_name)}_vs_{self._safe(pdf2_name)}_{datetime.now():%Y%m%d_%H%M%S}.html"
+        filename = f"{self._safe(pdf1_name)}_vs_{self._safe(pdf2_name)}_{datetime.now():%Y%m%d_%H%M%S}.html"
         output_path = os.path.join(self.output_dir, filename)
         
         # Write the report to file
@@ -61,6 +73,107 @@ class ReportGenerator:
         return output_path
 
     # ─── helpers ──────────────────────────────────────────────────
+    def _build_table_registry(self, results: Dict):
+        """Build a registry of all tables for cross-referencing."""
+        for page_num, page in results.get("pages", {}).items():
+            for table in page.get("table_differences", []):
+                # Register using both table IDs if available
+                if table.get("table_id1"):
+                    self.table_registry[table.get("table_id1")] = table
+                if table.get("table_id2"):
+                    self.table_registry[table.get("table_id2")] = table
+    
+    def _preprocess_nested_tables(self, results: Dict) -> Dict:
+        """Pre-process results to enhance nested table visualization."""
+        processed = {**results}  # Create a copy
+        
+        # Process nested relationships
+        for page_num, page in processed.get("pages", {}).items():
+            # Track processed tables to avoid duplicates
+            processed_tables = set()
+            
+            # First pass: build the hierarchy tree
+            table_hierarchy = {}
+            for table in page.get("table_differences", []):
+                table_id = table.get("table_id1") or table.get("table_id2")
+                if not table_id:
+                    continue
+                    
+                # Find parent ID
+                parent_id = None
+                for other_table in page.get("table_differences", []):
+                    other_id = other_table.get("table_id1") or other_table.get("table_id2")
+                    if other_id == table_id:
+                        continue
+                        
+                    if other_table.get("has_nested_tables") and table_id in other_table.get("nested_tables", []):
+                        parent_id = other_id
+                        break
+                
+                # Store in hierarchy
+                table_hierarchy[table_id] = {
+                    "parent": parent_id,
+                    "table": table,
+                    "children": []
+                }
+            
+            # Second pass: build child lists
+            for table_id, info in table_hierarchy.items():
+                if info["parent"]:
+                    if info["parent"] in table_hierarchy:
+                        table_hierarchy[info["parent"]]["children"].append(table_id)
+            
+            # Third pass: reorganize tables in processed results
+            new_table_differences = []
+            
+            # Start with root tables (those without parents)
+            for table_id, info in table_hierarchy.items():
+                if not info["parent"] and table_id not in processed_tables:
+                    # Add this table
+                    new_table_differences.append(info["table"])
+                    processed_tables.add(table_id)
+                    
+                    # Add nested tables property with full objects
+                    info["table"]["nested_table_objects"] = []
+                    
+                    # Process children recursively
+                    self._add_nested_tables(info["table"], table_hierarchy, processed_tables)
+            
+            # Replace table differences with new hierarchical version
+            page["table_differences"] = new_table_differences
+        
+        return processed
+    
+    def _add_nested_tables(self, parent_table, hierarchy, processed_tables):
+        """Recursively add nested tables to parent table."""
+        parent_id = parent_table.get("table_id1") or parent_table.get("table_id2")
+        if not parent_id or parent_id not in hierarchy:
+            return
+            
+        # Get children
+        children_ids = hierarchy[parent_id]["children"]
+        
+        # Process each child
+        for child_id in children_ids:
+            if child_id in processed_tables:
+                continue
+                
+            # Get child info
+            child_info = hierarchy[child_id]
+            child_table = child_info["table"]
+            
+            # Mark as processed
+            processed_tables.add(child_id)
+            
+            # Add to parent's nested objects
+            if "nested_table_objects" not in parent_table:
+                parent_table["nested_table_objects"] = []
+                
+            parent_table["nested_table_objects"].append(child_table)
+            
+            # Process this child's children
+            self._add_nested_tables(child_table, hierarchy, processed_tables)
+    
     def _render(self, results, pdf1_name, pdf2_name, metadata, summary):
         """Render the HTML template with the provided data."""
         template = Template(self._template_str(), autoescape=True)
@@ -85,6 +198,9 @@ class ReportGenerator:
         deleted_tables = 0
         inserted_tables = 0
         
+        # Keep track of already counted nested tables
+        counted_nested_tables = set()
+        
         # Analyze differences by page
         for page_num, page in results.get("pages", {}).items():
             page_has_diff = False
@@ -97,6 +213,12 @@ class ReportGenerator:
             
             # Table differences
             for table in page.get("table_differences", []):
+                # Skip nested tables that have already been counted
+                table_id = table.get("table_id1") or table.get("table_id2")
+                if table_id in counted_nested_tables:
+                    continue
+                    
+                # Process this table
                 status = table.get("status", "")
                 
                 if status == "matched":
@@ -116,6 +238,14 @@ class ReportGenerator:
                     inserted_tables += 1
                     total_table += 1
                     page_has_diff = True
+                
+                # Process nested tables
+                if table.get("has_nested_tables") and "nested_table_objects" in table:
+                    self._count_nested_tables(table.get("nested_table_objects", []), 
+                                            counted_nested_tables, 
+                                            matched_tables, moved_tables, modified_tables,
+                                            deleted_tables, inserted_tables, 
+                                            total_table, page_has_diff)
             
             if page_has_diff:
                 pages_with_diff += 1
@@ -147,6 +277,47 @@ class ReportGenerator:
                 "percentage_changed": table_diff_percent
             }
         }
+    
+    def _count_nested_tables(self, nested_tables, counted_nested_tables, 
+                           matched_tables, moved_tables, modified_tables,
+                           deleted_tables, inserted_tables, total_table, page_has_diff):
+        """Count nested tables for statistics."""
+        for table in nested_tables:
+            # Skip if already counted
+            table_id = table.get("table_id1") or table.get("table_id2")
+            if table_id in counted_nested_tables:
+                continue
+                
+            # Mark as counted
+            counted_nested_tables.add(table_id)
+            
+            # Count by status
+            status = table.get("status", "")
+            
+            if status == "matched":
+                matched_tables += 1
+            elif status == "moved":
+                moved_tables += 1
+            elif status == "modified":
+                modified_tables += 1
+                total_table += 1
+                page_has_diff = True
+            elif status == "deleted":
+                deleted_tables += 1
+                total_table += 1
+                page_has_diff = True
+            elif status == "inserted":
+                inserted_tables += 1
+                total_table += 1
+                page_has_diff = True
+                
+            # Recursively process nested tables
+            if table.get("has_nested_tables") and "nested_table_objects" in table:
+                self._count_nested_tables(table.get("nested_table_objects", []), 
+                                        counted_nested_tables, 
+                                        matched_tables, moved_tables, modified_tables,
+                                        deleted_tables, inserted_tables, 
+                                        total_table, page_has_diff)
 
     @staticmethod
     def _safe(name):
@@ -156,7 +327,7 @@ class ReportGenerator:
     # ─── HTML template ────────────────────────────────────────────
     @staticmethod
     def _template_str() -> str:
-        """Return the HTML template for the comparison report."""
+        """Return the enhanced HTML template for the comparison report."""
         return """
 <!DOCTYPE html>
 <html lang="en">
@@ -173,9 +344,16 @@ class ReportGenerator:
             --danger-color: #EA4335;
             --light-color: #F8F9FA;
             --dark-color: #212529;
+            
+            /* Specific colors for differences */
             --deleted-bg: #FFEDED;
-            --inserted-bg: #EDFFF0;
+            --deleted-color: #FF0000;
+            --inserted-bg: #EDF5FF;
+            --inserted-color: #0000FF;
             --modified-bg: #FCF8E3;
+            --modified-color: #EA4335;
+            --similar-bg: #EDFFF0;
+            --similar-color: #00AA00;
         }
         
         body {
@@ -188,7 +366,7 @@ class ReportGenerator:
         }
         
         .container {
-            max-width: 1200px;
+            max-width: 100%;
             margin: 0 auto;
             padding: 20px;
             background-color: white;
@@ -360,13 +538,47 @@ class ReportGenerator:
         }
         
         .page-badge.has-diff {
-            background-color: var(--warning-color);
+            background-color: var(--danger-color);
             color: white;
         }
         
         .page-badge.no-diff {
             background-color: var(--success-color);
             color: white;
+        }
+        
+        /* Side-by-side layout */
+        .side-by-side-container {
+            display: flex;
+            width: 100%;
+            overflow: hidden;
+            margin-bottom: 20px;
+            border: 1px solid #e5e5e5;
+            border-radius: 5px;
+        }
+        
+        .pdf-column {
+            flex: 1;
+            padding: 15px;
+            overflow-y: auto;
+            max-height: calc(100vh - 200px);
+            border-right: 1px solid #e5e5e5;
+        }
+        
+        .pdf-column:last-child {
+            border-right: none;
+        }
+        
+        .pdf-column-header {
+            background-color: #f5f5f5;
+            padding: 10px;
+            font-weight: bold;
+            text-align: center;
+            border-bottom: 1px solid #e5e5e5;
+            margin: -15px -15px 15px -15px;
+            position: sticky;
+            top: 0;
+            z-index: 10;
         }
         
         /* Diff headers */
@@ -383,20 +595,26 @@ class ReportGenerator:
         
         .diff-header.deleted {
             background-color: var(--deleted-bg);
-            color: var(--danger-color);
-            border-left: 4px solid var(--danger-color);
+            color: var(--deleted-color);
+            border-left: 4px solid var(--deleted-color);
         }
         
         .diff-header.inserted {
             background-color: var(--inserted-bg);
-            color: var(--success-color);
-            border-left: 4px solid var(--success-color);
+            color: var(--inserted-color);
+            border-left: 4px solid var(--inserted-color);
         }
         
         .diff-header.modified {
             background-color: var(--modified-bg);
-            color: var(--warning-color);
-            border-left: 4px solid var(--warning-color);
+            color: var(--modified-color);
+            border-left: 4px solid var(--modified-color);
+        }
+        
+        .diff-header.similar {
+            background-color: var(--similar-bg);
+            color: var(--similar-color);
+            border-left: 4px solid var(--similar-color);
         }
         
         /* Text differences */
@@ -423,15 +641,23 @@ class ReportGenerator:
         
         .text-diff-line.deleted {
             background-color: var(--deleted-bg);
+            color: var(--deleted-color);
         }
         
         .text-diff-line.inserted {
             background-color: var(--inserted-bg);
+            color: var(--inserted-color);
         }
         
         .text-diff-line.changed,
         .text-diff-line.modified {
             background-color: var(--modified-bg);
+            color: var(--modified-color);
+        }
+        
+        .text-diff-line.similar {
+            background-color: var(--similar-bg);
+            color: var(--similar-color);
         }
         
         /* Inline text diff */
@@ -461,14 +687,23 @@ class ReportGenerator:
         .diff-deleted {
             background-color: var(--deleted-bg);
             text-decoration: line-through;
-            color: var(--danger-color);
+            color: var(--deleted-color);
             padding: 0 2px;
             border-radius: 2px;
+            font-weight: bold;
         }
         
         .diff-inserted {
             background-color: var(--inserted-bg);
-            color: var(--success-color);
+            color: var(--inserted-color);
+            padding: 0 2px;
+            border-radius: 2px;
+            font-weight: bold;
+        }
+        
+        .diff-similar {
+            background-color: var(--similar-bg);
+            color: var(--similar-color);
             padding: 0 2px;
             border-radius: 2px;
         }
@@ -508,24 +743,75 @@ class ReportGenerator:
             background-color: #f1f1f1;
         }
         
+        /* Enhanced table cell styles */
         .diff-table.deleted {
-            background-color: var(--deleted-bg);
-            border: 1px solid var(--danger-color);
+            border: 2px solid var(--deleted-color);
         }
         
         .diff-table.inserted {
-            background-color: var(--inserted-bg);
-            border: 1px solid var(--success-color);
+            border: 2px solid var(--inserted-color);
         }
         
         .diff-table td.deleted {
             background-color: var(--deleted-bg);
-            color: var(--danger-color);
+            color: var(--deleted-color);
+            font-weight: bold;
         }
         
         .diff-table td.inserted {
             background-color: var(--inserted-bg);
-            color: var(--success-color);
+            color: var(--inserted-color);
+            font-weight: bold;
+        }
+        
+        .diff-table td.modified {
+            background-color: var(--modified-bg);
+            color: var(--modified-color);
+            font-weight: bold;
+        }
+        
+        .diff-table td.similar {
+            background-color: var(--similar-bg);
+            color: var(--similar-color);
+        }
+        
+        /* Enhanced table styles with cell coordinates */
+        .column-headers th {
+            background-color: #f0f0f0;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        
+        .row-index {
+            background-color: #f0f0f0;
+            font-weight: bold;
+            position: sticky;
+            left: 0;
+            z-index: 5;
+        }
+        
+        .row-index-header {
+            background-color: #e0e0e0;
+            position: sticky;
+            top: 0;
+            left: 0;
+            z-index: 15;
+        }
+        
+        /* Table cell highlighting on hover */
+        .highlight-cell {
+            background-color: #e0f7fa !important;
+            position: relative;
+            z-index: 1;
+        }
+        
+        .highlight-row td {
+            background-color: rgba(224, 247, 250, 0.5);
+        }
+        
+        .highlight-col {
+            background-color: rgba(224, 247, 250, 0.5);
         }
         
         /* Nested tables */
@@ -541,6 +827,8 @@ class ReportGenerator:
             margin-left: 20px;
             border-left: 2px solid var(--primary-color);
             padding-left: 20px;
+            margin-top: 10px;
+            margin-bottom: 10px;
         }
         
         /* Badges */
@@ -604,7 +892,131 @@ class ReportGenerator:
             flex: 1;
         }
         
+        /* Navigation elements */
+        .toc {
+            background: #f8f8f8;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        
+        .toc-title {
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        
+        .toc-links {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        
+        .toc-link {
+            display: inline-block;
+            padding: 3px 8px;
+            background: #e9e9e9;
+            border-radius: 4px;
+            color: var(--dark-color);
+            text-decoration: none;
+            font-size: 0.9rem;
+        }
+        
+        .toc-link:hover {
+            background: #d9d9d9;
+        }
+        
+        .toc-link.has-diff {
+            background-color: var(--danger-color);
+            color: white;
+        }
+        
+        .back-to-top {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: var(--primary-color);
+            color: white;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-decoration: none;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            transition: all 0.3s;
+            opacity: 0;
+            pointer-events: none;
+            z-index: 1000;
+        }
+        
+        .back-to-top.visible {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        
+        .back-to-top:hover {
+            background: #3367d6;
+            transform: translateY(-3px);
+        }
+        
+        /* Legend for diff colors */
+        .diff-legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin: 20px 0;
+            padding: 15px;
+            background-color: #f5f5f5;
+            border-radius: 5px;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            font-size: 0.9rem;
+        }
+        
+        .legend-color {
+            width: 15px;
+            height: 15px;
+            border-radius: 3px;
+            margin-right: 5px;
+        }
+        
+        .legend-deleted {
+            background-color: var(--deleted-bg);
+            border: 1px solid var(--deleted-color);
+        }
+        
+        .legend-inserted {
+            background-color: var(--inserted-bg);
+            border: 1px solid var(--inserted-color);
+        }
+        
+        .legend-modified {
+            background-color: var(--modified-bg);
+            border: 1px solid var(--modified-color);
+        }
+        
+        .legend-similar {
+            background-color: var(--similar-bg);
+            border: 1px solid var(--similar-color);
+        }
+        
         /* Responsive design */
+        @media (max-width: 992px) {
+            .side-by-side-container {
+                flex-direction: column;
+            }
+            
+            .pdf-column {
+                border-right: none;
+                border-bottom: 1px solid #e5e5e5;
+                max-height: none;
+            }
+        }
+        
         @media (max-width: 768px) {
             .summary-grid {
                 grid-template-columns: 1fr 1fr;
@@ -615,6 +1027,10 @@ class ReportGenerator:
             }
             
             .metadata {
+                grid-template-columns: 1fr;
+            }
+            
+            .inline-diff {
                 grid-template-columns: 1fr;
             }
         }
@@ -670,6 +1086,26 @@ class ReportGenerator:
                 </div>
             </div>
             
+            <!-- Color Legend -->
+            <div class="diff-legend">
+                <div class="legend-item">
+                    <div class="legend-color legend-deleted"></div>
+                    <span>Deleted Content (Red) - only in {{ pdf1_name }}</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color legend-inserted"></div>
+                    <span>Inserted Content (Blue) - only in {{ pdf2_name }}</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color legend-modified"></div>
+                    <span>Modified Content (Red) - changed between versions</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color legend-similar"></div>
+                    <span>Similar Content (Green) - semantically equivalent</span>
+                </div>
+            </div>
+            
             <!-- Metadata -->
             {% if metadata %}
             <div class="metadata">
@@ -681,6 +1117,37 @@ class ReportGenerator:
                 {% endfor %}
             </div>
             {% endif %}
+        </section>
+        
+        <!-- Table of Contents -->
+        <section class="toc">
+            <div class="toc-title">Quick Navigation</div>
+            <div class="toc-links">
+                {% for page_num in range(1, results.max_pages + 1) %}
+                    {% set page = results.pages.get(page_num, {}) %}
+                    {% set has_differences = false %}
+                    
+                    {% if page.text_differences %}
+                        {% for diff in page.text_differences %}
+                            {% if diff.status != 'equal' %}
+                                {% set has_differences = true %}
+                            {% endif %}
+                        {% endfor %}
+                    {% endif %}
+                    
+                    {% if page.table_differences %}
+                        {% for diff in page.table_differences %}
+                            {% if diff.status not in ['matched', 'moved'] %}
+                                {% set has_differences = true %}
+                            {% endif %}
+                        {% endfor %}
+                    {% endif %}
+                    
+                    <a href="#page-{{ page_num }}" class="toc-link page-link {{ 'has-diff' if has_differences else '' }}">
+                        Page {{ page_num }}
+                    </a>
+                {% endfor %}
+            </div>
         </section>
         
         <!-- Page by Page Comparison -->
@@ -716,87 +1183,250 @@ class ReportGenerator:
                     </div>
                 </h2>
                 
-                <!-- Text Differences -->
-                {% if page.text_differences %}
-                    <div class="text-differences">
-                        <div class="diff-header">Text Content</div>
-                        {% for diff in page.text_differences %}
-                            {% if diff.status == 'equal' %}
-                                <div class="text-diff-line">
-                                    <span class="line-number">{{ diff.line_num1 + 1 }}</span>
-                                    <span class="text-content">{{ diff.text1 }}</span>
-                                </div>
-                            {% elif diff.status == 'deleted' %}
-                                <div class="text-diff-line deleted">
-                                    <span class="line-number">{{ diff.line_num1 + 1 }}</span>
-                                    <span class="text-content">{{ diff.text1 }}</span>
-                                </div>
-                            {% elif diff.status == 'inserted' %}
-                                <div class="text-diff-line inserted">
-                                    <span class="line-number">{{ diff.line_num2 + 1 }}</span>
-                                    <span class="text-content">{{ diff.text2 }}</span>
-                                </div>
-                            {% elif diff.status in ['changed', 'modified'] %}
-                                {% if diff.diff_html %}
-                                    {{ diff.diff_html|safe }}
-                                {% else %}
-                                    <div class="text-diff-line changed">
-                                        <span class="line-number">{{ diff.line_num1 + 1 if diff.line_num1 is not none else '-' }}</span>
-                                        <span class="text-content">{{ diff.text1 }}</span>
+                <!-- Side-by-side container for this page -->
+                <div class="side-by-side-container">
+                    <!-- Left column (PDF 1) -->
+                    <div class="pdf-column">
+                        <div class="pdf-column-header">{{ pdf1_name }}</div>
+                        
+                        <!-- Text content from PDF 1 -->
+                        {% set has_pdf1_content = false %}
+                        
+                        {% if page.text_differences %}
+                            <div class="text-differences">
+                                <div class="diff-header">Text Content</div>
+                                {% for diff in page.text_differences %}
+                                    {% if diff.status == 'equal' %}
+                                        <div class="text-diff-line similar">
+                                            <span class="line-number">{{ diff.line_num1 + 1 if diff.line_num1 is not none else '-' }}</span>
+                                            <span class="text-content">{{ diff.text1 }}</span>
+                                        </div>
+                                        {% set has_pdf1_content = true %}
+                                    {% elif diff.status == 'deleted' %}
+                                        <div class="text-diff-line deleted">
+                                            <span class="line-number">{{ diff.line_num1 + 1 }}</span>
+                                            <span class="text-content">{{ diff.text1 }}</span>
+                                        </div>
+                                        {% set has_pdf1_content = true %}
+                                    {% elif diff.status in ['changed', 'modified'] and diff.line_num1 is not none %}
+                                        <div class="text-diff-line modified">
+                                            <span class="line-number">{{ diff.line_num1 + 1 }}</span>
+                                            <span class="text-content">{{ diff.text1 }}</span>
+                                        </div>
+                                        {% set has_pdf1_content = true %}
+                                    {% endif %}
+                                {% endfor %}
+                            </div>
+                        {% endif %}
+                        
+                        <!-- Tables from PDF 1 -->
+                        {% for t in page.table_differences %}
+                            {% if t.status in ['matched', 'modified', 'deleted', 'moved'] %}
+                                {% if t.status == 'matched' %}
+                                    <div class="diff-header similar">
+                                        Table {{ t.table_id1 }} (Identical in both PDFs)
+                                        {% if t.has_nested_tables %}
+                                            <span class="nested-table-indicator">Contains nested tables</span>
+                                        {% endif %}
                                     </div>
-                                    <div class="text-diff-line changed">
-                                        <span class="line-number">{{ diff.line_num2 + 1 if diff.line_num2 is not none else '-' }}</span>
-                                        <span class="text-content">{{ diff.text2 }}</span>
+                                    <!-- Display table content from PDF 1 -->
+                                    {{ t.diff_html|safe if t.diff_html else '<div>Table content not available</div>' }}
+                                    {% set has_pdf1_content = true %}
+                                {% elif t.status == 'moved' %}
+                                    <div class="diff-header similar">
+                                        Table {{ t.table_id1 }}
+                                        <span class="moved-badge">Moved to page {{ t.page2 }} in {{ pdf2_name }}</span>
+                                        {% if t.has_nested_tables %}
+                                            <span class="nested-table-indicator">Contains nested tables</span>
+                                        {% endif %}
+                                    </div>
+                                    <!-- Display table content from PDF 1 -->
+                                    {{ t.diff_html|safe if t.diff_html else '<div>Table content not available</div>' }}
+                                    {% set has_pdf1_content = true %}
+                                {% elif t.status == 'modified' %}
+                                    <div class="diff-header modified">
+                                        Table {{ t.table_id1 }} (Modified - {{ t.differences }} differences)
+                                        {% if t.has_nested_tables %}
+                                            <span class="nested-table-indicator">Contains nested tables</span>
+                                        {% endif %}
+                                    </div>
+                                    <!-- For modified table, show the left side of diff -->
+                                    {% if t.diff_html %}
+                                        {{ t.diff_html|safe }}
+                                    {% else %}
+                                        <div>Table content not available</div>
+                                    {% endif %}
+                                    {% set has_pdf1_content = true %}
+                                {% elif t.status == 'deleted' %}
+                                    <div class="diff-header deleted">
+                                        Table {{ t.table_id1 }} (Only in {{ pdf1_name }})
+                                        {% if t.has_nested_tables %}
+                                            <span class="nested-table-indicator">Contains nested tables</span>
+                                        {% endif %}
+                                    </div>
+                                    <!-- Display deleted table -->
+                                    {{ t.diff_html|safe if t.diff_html else '<div>Table content not available</div>' }}
+                                    {% set has_pdf1_content = true %}
+                                {% endif %}
+                                
+                                <!-- Display nested tables if any -->
+                                {% if t.nested_table_objects %}
+                                    <div class="nested-table-container">
+                                        {% for nested in t.nested_table_objects %}
+                                            {% if nested.status == 'matched' %}
+                                                <div class="diff-header similar">
+                                                    Nested Table {{ nested.table_id1 }} (Identical)
+                                                </div>
+                                                {{ nested.diff_html|safe if nested.diff_html else '<div>Nested table content not available</div>' }}
+                                            {% elif nested.status == 'moved' %}
+                                                <div class="diff-header similar">
+                                                    Nested Table {{ nested.table_id1 }}
+                                                    <span class="moved-badge">Moved from page {{ nested.page1 }} to {{ nested.page2 }}</span>
+                                                </div>
+                                                {{ nested.diff_html|safe if nested.diff_html else '<div>Nested table content not available</div>' }}
+                                            {% elif nested.status == 'modified' and nested.table_id1 %}
+                                                <div class="diff-header modified">
+                                                    Nested Table {{ nested.table_id1 }} (Modified - {{ nested.differences }} differences)
+                                                </div>
+                                                {{ nested.diff_html|safe if nested.diff_html else '<div>Nested table content not available</div>' }}
+                                            {% elif nested.status == 'deleted' %}
+                                                <div class="diff-header deleted">
+                                                    Nested Table (Only in {{ pdf1_name }})
+                                                </div>
+                                                {{ nested.diff_html|safe if nested.diff_html else '<div>Nested table content not available</div>' }}
+                                            {% endif %}
+                                        {% endfor %}
                                     </div>
                                 {% endif %}
                             {% endif %}
                         {% endfor %}
+                        
+                        {% if not has_pdf1_content %}
+                            <div class="diff-header">No content on this page</div>
+                        {% endif %}
                     </div>
-                {% endif %}
-                
-                <!-- Table Differences -->
-                {% for t in page.table_differences %}
-                    {% if t.status == 'matched' %}
-                        <div class="diff-header">
-                            Table {{ t.table_id1 or t.table_id2 }} (Identical)
-                            {% if t.has_nested_tables %}
-                                <span class="nested-table-indicator">Contains nested tables</span>
+                    
+                    <!-- Right column (PDF 2) -->
+                    <div class="pdf-column">
+                        <div class="pdf-column-header">{{ pdf2_name }}</div>
+                        
+                        <!-- Text content from PDF 2 -->
+                        {% set has_pdf2_content = false %}
+                        
+                        {% if page.text_differences %}
+                            <div class="text-differences">
+                                <div class="diff-header">Text Content</div>
+                                {% for diff in page.text_differences %}
+                                    {% if diff.status == 'equal' %}
+                                        <div class="text-diff-line similar">
+                                            <span class="line-number">{{ diff.line_num2 + 1 if diff.line_num2 is not none else '-' }}</span>
+                                            <span class="text-content">{{ diff.text2 }}</span>
+                                        </div>
+                                        {% set has_pdf2_content = true %}
+                                    {% elif diff.status == 'inserted' %}
+                                        <div class="text-diff-line inserted">
+                                            <span class="line-number">{{ diff.line_num2 + 1 }}</span>
+                                            <span class="text-content">{{ diff.text2 }}</span>
+                                        </div>
+                                        {% set has_pdf2_content = true %}
+                                    {% elif diff.status in ['changed', 'modified'] and diff.line_num2 is not none %}
+                                        <div class="text-diff-line modified">
+                                            <span class="line-number">{{ diff.line_num2 + 1 }}</span>
+                                            <span class="text-content">{{ diff.text2 }}</span>
+                                        </div>
+                                        {% set has_pdf2_content = true %}
+                                    {% endif %}
+                                {% endfor %}
+                            </div>
+                        {% endif %}
+                        
+                        <!-- Tables from PDF 2 -->
+                        {% for t in page.table_differences %}
+                            {% if t.status in ['matched', 'modified', 'inserted', 'moved'] %}
+                                {% if t.status == 'matched' %}
+                                    <div class="diff-header similar">
+                                        Table {{ t.table_id2 }} (Identical in both PDFs)
+                                        {% if t.has_nested_tables %}
+                                            <span class="nested-table-indicator">Contains nested tables</span>
+                                        {% endif %}
+                                    </div>
+                                    <!-- Display table content from PDF 2 -->
+                                    {{ t.diff_html|safe if t.diff_html else '<div>Table content not available</div>' }}
+                                    {% set has_pdf2_content = true %}
+                                {% elif t.status == 'moved' and t.page2 == page_num %}
+                                    <div class="diff-header similar">
+                                        Table {{ t.table_id2 }}
+                                        <span class="moved-badge">Moved from page {{ t.page1 }} in {{ pdf1_name }}</span>
+                                        {% if t.has_nested_tables %}
+                                            <span class="nested-table-indicator">Contains nested tables</span>
+                                        {% endif %}
+                                    </div>
+                                    <!-- Display table content from PDF 2 -->
+                                    {{ t.diff_html|safe if t.diff_html else '<div>Table content not available</div>' }}
+                                    {% set has_pdf2_content = true %}
+                                {% elif t.status == 'modified' %}
+                                    <div class="diff-header modified">
+                                        Table {{ t.table_id2 }} (Modified - {{ t.differences }} differences)
+                                        {% if t.has_nested_tables %}
+                                            <span class="nested-table-indicator">Contains nested tables</span>
+                                        {% endif %}
+                                    </div>
+                                    <!-- For modified table, show the right side of diff -->
+                                    {% if t.diff_html %}
+                                        {{ t.diff_html|safe }}
+                                    {% else %}
+                                        <div>Table content not available</div>
+                                    {% endif %}
+                                    {% set has_pdf2_content = true %}
+                                {% elif t.status == 'inserted' %}
+                                    <div class="diff-header inserted">
+                                        Table {{ t.table_id2 }} (Only in {{ pdf2_name }})
+                                        {% if t.has_nested_tables %}
+                                            <span class="nested-table-indicator">Contains nested tables</span>
+                                        {% endif %}
+                                    </div>
+                                    <!-- Display inserted table -->
+                                    {{ t.diff_html|safe if t.diff_html else '<div>Table content not available</div>' }}
+                                    {% set has_pdf2_content = true %}
+                                {% endif %}
+                                
+                                <!-- Display nested tables if any -->
+                                {% if t.nested_table_objects %}
+                                    <div class="nested-table-container">
+                                        {% for nested in t.nested_table_objects %}
+                                            {% if nested.status == 'matched' %}
+                                                <div class="diff-header similar">
+                                                    Nested Table {{ nested.table_id2 }} (Identical)
+                                                </div>
+                                                {{ nested.diff_html|safe if nested.diff_html else '<div>Nested table content not available</div>' }}
+                                            {% elif nested.status == 'moved' and nested.page2 == page_num %}
+                                                <div class="diff-header similar">
+                                                    Nested Table {{ nested.table_id2 }}
+                                                    <span class="moved-badge">Moved from page {{ nested.page1 }} to {{ nested.page2 }}</span>
+                                                </div>
+                                                {{ nested.diff_html|safe if nested.diff_html else '<div>Nested table content not available</div>' }}
+                                            {% elif nested.status == 'modified' and nested.table_id2 %}
+                                                <div class="diff-header modified">
+                                                    Nested Table {{ nested.table_id2 }} (Modified - {{ nested.differences }} differences)
+                                                </div>
+                                                {{ nested.diff_html|safe if nested.diff_html else '<div>Nested table content not available</div>' }}
+                                            {% elif nested.status == 'inserted' %}
+                                                <div class="diff-header inserted">
+                                                    Nested Table (Only in {{ pdf2_name }})
+                                                </div>
+                                                {{ nested.diff_html|safe if nested.diff_html else '<div>Nested table content not available</div>' }}
+                                            {% endif %}
+                                        {% endfor %}
+                                    </div>
+                                {% endif %}
                             {% endif %}
-                        </div>
-                    {% elif t.status == 'moved' %}
-                        <div class="diff-header">
-                            Table {{ t.table_id1 or t.table_id2 }}
-                            <span class="moved-badge">Moved from page {{ t.page1 }} to {{ t.page2 }}</span>
-                            {% if t.has_nested_tables %}
-                                <span class="nested-table-indicator">Contains nested tables</span>
-                            {% endif %}
-                        </div>
-                    {% elif t.status == 'modified' %}
-                        <div class="diff-header modified">
-                            Table {{ t.table_id1 or t.table_id2 }} (Modified - {{ t.differences }} differences)
-                            {% if t.has_nested_tables %}
-                                <span class="nested-table-indicator">Contains nested tables</span>
-                            {% endif %}
-                        </div>
-                        {{ t.diff_html|safe }}
-                    {% elif t.status == 'deleted' %}
-                        <div class="diff-header deleted">
-                            Table only in first document
-                            {% if t.has_nested_tables %}
-                                <span class="nested-table-indicator">Contains nested tables</span>
-                            {% endif %}
-                        </div>
-                        {{ t.diff_html|safe }}
-                    {% elif t.status == 'inserted' %}
-                        <div class="diff-header inserted">
-                            Table only in second document
-                            {% if t.has_nested_tables %}
-                                <span class="nested-table-indicator">Contains nested tables</span>
-                            {% endif %}
-                        </div>
-                        {{ t.diff_html|safe }}
-                    {% endif %}
-                {% endfor %}
+                        {% endfor %}
+                        
+                        {% if not has_pdf2_content %}
+                            <div class="diff-header">No content on this page</div>
+                        {% endif %}
+                    </div>
+                </div>
             </section>
         {% endfor %}
         
@@ -805,14 +1435,22 @@ class ReportGenerator:
         </footer>
     </div>
     
+    <a href="#" class="back-to-top" id="back-to-top">↑</a>
+    
     <script>
-        // Initialize collapsible sections
+        // Initialize UI enhancements when the document is ready
         document.addEventListener('DOMContentLoaded', function() {
             // Make diff headers collapsible
             const collapsibles = document.querySelectorAll('.collapsible');
             collapsibles.forEach(function(item) {
                 item.addEventListener('click', function() {
                     this.classList.toggle('expanded');
+                    
+                    // Toggle content visibility
+                    const content = this.nextElementSibling;
+                    if (content.classList.contains('collapsible-content')) {
+                        content.classList.toggle('expanded');
+                    }
                 });
             });
             
@@ -825,6 +1463,101 @@ class ReportGenerator:
                     document.querySelector(targetId).scrollIntoView({
                         behavior: 'smooth'
                     });
+                });
+            });
+            
+            // Back to top button
+            const backToTop = document.getElementById('back-to-top');
+            
+            // Show/hide back to top button
+            window.addEventListener('scroll', function() {
+                if (window.pageYOffset > 300) {
+                    backToTop.classList.add('visible');
+                } else {
+                    backToTop.classList.remove('visible');
+                }
+            });
+            
+            // Scroll to top when clicking the button
+            backToTop.addEventListener('click', function(e) {
+                e.preventDefault();
+                window.scrollTo({
+                    top: 0,
+                    behavior: 'smooth'
+                });
+            });
+            
+            // Enhanced table cell interaction
+            const tableCells = document.querySelectorAll('.diff-table td[data-col]');
+            tableCells.forEach(function(cell) {
+                cell.addEventListener('mouseenter', function() {
+                    // Get cell coordinates
+                    const col = this.getAttribute('data-col');
+                    const row = this.parentElement.getAttribute('data-row');
+                    
+                    // Find the container this cell belongs to
+                    const container = this.closest('.side-by-side-container');
+                    if (!container) return;
+                    
+                    // Select cells in both tables with matching coordinates
+                    const sameColCells = container.querySelectorAll(`.diff-table td[data-col="${col}"]`);
+                    sameColCells.forEach(c => c.classList.add('highlight-col'));
+                    
+                    const sameRowCells = container.querySelectorAll(`.diff-table tr[data-row="${row}"] td`);
+                    sameRowCells.forEach(c => c.classList.add('highlight-row'));
+                    
+                    // Extra highlight for this specific cell
+                    this.classList.add('highlight-cell');
+                });
+                
+                cell.addEventListener('mouseleave', function() {
+                    // Remove all highlighting
+                    document.querySelectorAll('.highlight-col, .highlight-row, .highlight-cell').forEach(el => {
+                        el.classList.remove('highlight-col');
+                        el.classList.remove('highlight-row');
+                        el.classList.remove('highlight-cell');
+                    });
+                });
+            });
+            
+            // Synchronize scrolling between side-by-side columns
+            const pdfColumns = document.querySelectorAll('.pdf-column');
+            
+            // Group columns by their container
+            const columnPairs = {};
+            document.querySelectorAll('.side-by-side-container').forEach((container, index) => {
+                const columns = container.querySelectorAll('.pdf-column');
+                if (columns.length === 2) {
+                    columnPairs[index] = {
+                        left: columns[0],
+                        right: columns[1],
+                        syncing: false // Flag to prevent recursive scroll events
+                    };
+                }
+            });
+            
+            // Add scroll event listeners to each column
+            Object.values(columnPairs).forEach(pair => {
+                pair.left.addEventListener('scroll', function() {
+                    if (!pair.syncing) {
+                        pair.syncing = true;
+                        // Get scroll position as percentage
+                        const scrollPercent = this.scrollTop / (this.scrollHeight - this.clientHeight);
+                        // Apply to right column
+                        pair.right.scrollTop = scrollPercent * (pair.right.scrollHeight - pair.right.clientHeight);
+                        setTimeout(() => { pair.syncing = false; }, 50);
+                    }
+                });
+                
+                pair.right.addEventListener('scroll', function() {
+                    if (!pair.syncing) {
+                        pair.syncing = true;
+                        // Get scroll position as percentage
+                        const scrollPercent = this.scrollTop / (this.scrollHeight - this.clientHeight);
+                        // Apply to left column
+                        pair.left.scrollTop = scrollPercent * (pair.left.scrollHeight - pair.left.clientHeight);
+                        setTimeout(() => { pair.syncing = false; }, 50);
+                    }
                 });
             });
         });
