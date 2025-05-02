@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PDF Comparison Tool</title>
+    <title>Enhanced PDF Comparison Tool 2.0</title>
     <style>
         :root {
             --primary-color: #4285F4;
@@ -12,6 +12,15 @@
             --danger-color: #EA4335;
             --light-color: #F8F9FA;
             --dark-color: #212529;
+            /* New color variables for diff highlighting */
+            --deleted-color: #FF0000;
+            --inserted-color: #0000FF;
+            --modified-color: #EA4335;
+            --similar-color: #00AA00;
+            --deleted-bg: #FFEDED;
+            --inserted-bg: #EDF5FF;
+            --modified-bg: #FCF8E3;
+            --similar-bg: #EDFFF0;
         }
         
         body {
@@ -215,16 +224,172 @@
             border-radius: 5px;
             padding: 20px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            transition: all 0.3s ease;
+        }
+        
+        .feature-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 6px 12px rgba(0,0,0,0.1);
         }
         
         .feature-title {
             color: var(--primary-color);
             font-size: 18px;
             margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+        }
+        
+        .feature-icon {
+            margin-right: 10px;
+            width: 24px;
+            height: 24px;
+            background-color: var(--primary-color);
+            border-radius: 50%;
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
         }
         
         .feature-card ul {
             padding-left: 20px;
+        }
+        
+        .feature-card li {
+            margin-bottom: 8px;
+        }
+        
+        /* Progress bar */
+        .progress-container {
+            width: 100%;
+            background-color: #f1f1f1;
+            border-radius: 10px;
+            margin: 20px 0;
+            overflow: hidden;
+        }
+        
+        .progress-bar {
+            height: 20px;
+            background-color: var(--primary-color);
+            width: 0%;
+            transition: width 0.3s ease;
+            text-align: center;
+            color: white;
+            font-size: 12px;
+            line-height: 20px;
+        }
+        
+        .progress-status {
+            text-align: center;
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 20px;
+        }
+        
+        /* Tabs for comparison history */
+        .tabs {
+            display: flex;
+            border-bottom: 1px solid #ddd;
+            margin-bottom: 20px;
+        }
+        
+        .tab {
+            padding: 10px 20px;
+            cursor: pointer;
+            background-color: #f5f5f5;
+            border: 1px solid #ddd;
+            border-bottom: none;
+            margin-right: 5px;
+            border-radius: 4px 4px 0 0;
+        }
+        
+        .tab.active {
+            background-color: white;
+            border-bottom: 1px solid white;
+            margin-bottom: -1px;
+            font-weight: bold;
+            color: var(--primary-color);
+        }
+        
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
+        /* Comparison history table */
+        .history-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        
+        .history-table th, .history-table td {
+            padding: 10px;
+            border: 1px solid #ddd;
+            text-align: left;
+        }
+        
+        .history-table th {
+            background-color: #f5f5f5;
+            font-weight: bold;
+        }
+        
+        .history-table tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        
+        .history-table tr:hover {
+            background-color: #f0f0f0;
+        }
+        
+        /* Color Legend for Differences */
+        .diff-legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            padding: 15px;
+            background-color: #f8f8f8;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            font-size: 0.9rem;
+            margin-right: 15px;
+        }
+        
+        .legend-color {
+            width: 16px;
+            height: 16px;
+            border-radius: 3px;
+            margin-right: 6px;
+        }
+        
+        .legend-deleted {
+            background-color: var(--deleted-bg);
+            border: 1px solid var(--deleted-color);
+        }
+        
+        .legend-inserted {
+            background-color: var(--inserted-bg);
+            border: 1px solid var(--inserted-color);
+        }
+        
+        .legend-modified {
+            background-color: var(--modified-bg);
+            border: 1px solid var(--modified-color);
+        }
+        
+        .legend-similar {
+            background-color: var(--similar-bg);
+            border: 1px solid var(--similar-color);
         }
         
         @media (max-width: 768px) {
@@ -235,11 +400,38 @@
             .features {
                 grid-template-columns: 1fr;
             }
+            
+            .history-table {
+                display: block;
+                overflow-x: auto;
+            }
+            
+            .diff-legend {
+                flex-direction: column;
+                gap: 5px;
+            }
         }
         
         @media (max-width: 480px) {
             .summary-stats {
                 grid-template-columns: 1fr;
+            }
+            
+            .tabs {
+                flex-direction: column;
+                border-bottom: none;
+            }
+            
+            .tab {
+                border-radius: 0;
+                margin-right: 0;
+                border: 1px solid #ddd;
+                margin-bottom: 2px;
+            }
+            
+            .tab.active {
+                border-bottom: 1px solid #ddd;
+                margin-bottom: 2px;
             }
         }
     </style>
@@ -247,99 +439,163 @@
 <body>
     <div class="container">
         <header>
-            <h1>PDF Comparison Tool</h1>
-            <p>Compare PDFs with advanced table and text detection</p>
+            <h1>Enhanced PDF Comparison Tool 2.0</h1>
+            <p>Compare PDFs with intelligent table and text detection</p>
         </header>
         
-        <div class="upload-form">
-            <h2>Upload PDFs for Comparison</h2>
-            <form id="upload-form" enctype="multipart/form-data">
-                <div class="form-group">
-                    <label for="pdf1">First PDF:</label>
-                    <input type="file" id="pdf1" name="pdf1" accept=".pdf" class="input-file" required>
-                </div>
-                
-                <div class="form-group">
-                    <label for="pdf2">Second PDF:</label>
-                    <input type="file" id="pdf2" name="pdf2" accept=".pdf" class="input-file" required>
-                </div>
-                
-                <button type="submit" class="btn btn-primary btn-block">Compare PDFs</button>
-            </form>
+        <div class="tabs">
+            <div class="tab active" data-tab="upload">New Comparison</div>
+            <div class="tab" data-tab="history">Comparison History</div>
         </div>
         
-        <div id="loading" class="loading">
-            <div class="spinner"></div>
-            <p>Comparing PDFs... This may take a few moments.</p>
+        <div id="upload-tab" class="tab-content active">
+            <div class="upload-form">
+                <h2>Upload PDFs for Comparison</h2>
+                <form id="upload-form" enctype="multipart/form-data">
+                    <div class="form-group">
+                        <label for="pdf1">First PDF:</label>
+                        <input type="file" id="pdf1" name="pdf1" accept=".pdf" class="input-file" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="pdf2">Second PDF:</label>
+                        <input type="file" id="pdf2" name="pdf2" accept=".pdf" class="input-file" required>
+                    </div>
+                    
+                    <button type="submit" class="btn btn-primary btn-block">Compare PDFs</button>
+                </form>
+            </div>
+            
+            <div id="loading" class="loading">
+                <div class="spinner"></div>
+                <p>Comparing PDFs... This may take a few moments.</p>
+                
+                <div class="progress-container">
+                    <div id="progress-bar" class="progress-bar">0%</div>
+                </div>
+                <div id="progress-status" class="progress-status">Initializing comparison...</div>
+            </div>
+            
+            <div id="alerts"></div>
+            
+            <div id="result-section" class="result-section">
+                <h2>Comparison Results</h2>
+                
+                <div class="summary-stats">
+                    <div class="stat-item">
+                        <div class="stat-label">Pages with Differences</div>
+                        <div id="pages-diff" class="stat-value">0</div>
+                    </div>
+                    
+                    <div class="stat-item">
+                        <div class="stat-label">Text Differences</div>
+                        <div id="text-diff" class="stat-value">0</div>
+                    </div>
+                    
+                    <div class="stat-item">
+                        <div class="stat-label">Table Differences</div>
+                        <div id="table-diff" class="stat-value">0</div>
+                    </div>
+                    
+                    <div class="stat-item">
+                        <div class="stat-label">Total Differences</div>
+                        <div id="total-diff" class="stat-value">0</div>
+                    </div>
+                </div>
+                
+                <!-- New Color Legend -->
+                <div class="diff-legend">
+                    <div class="legend-item">
+                        <div class="legend-color legend-deleted"></div>
+                        <span>Deleted Content (Red)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color legend-inserted"></div>
+                        <span>New Content (Blue)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color legend-modified"></div>
+                        <span>Modified Content (Red)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color legend-similar"></div>
+                        <span>Similar Content (Green)</span>
+                    </div>
+                </div>
+                
+                <div class="result-card">
+                    <h3>Files Compared</h3>
+                    <p><strong>First PDF:</strong> <span id="file1-name"></span></p>
+                    <p><strong>Second PDF:</strong> <span id="file2-name"></span></p>
+                    <p><strong>Comparison Date:</strong> <span id="comparison-date"></span></p>
+                </div>
+                
+                <div class="text-center" style="text-align: center;">
+                    <a id="report-link" href="#" target="_blank" class="report-link">View Detailed Report</a>
+                </div>
+            </div>
         </div>
         
-        <div id="alerts"></div>
-        
-        <div id="result-section" class="result-section">
-            <h2>Comparison Results</h2>
+        <div id="history-tab" class="tab-content">
+            <h2>Recent Comparisons</h2>
+            <p>View and access your recent PDF comparisons.</p>
             
-            <div class="summary-stats">
-                <div class="stat-item">
-                    <div class="stat-label">Pages with Differences</div>
-                    <div id="pages-diff" class="stat-value">0</div>
-                </div>
-                
-                <div class="stat-item">
-                    <div class="stat-label">Text Differences</div>
-                    <div id="text-diff" class="stat-value">0</div>
-                </div>
-                
-                <div class="stat-item">
-                    <div class="stat-label">Table Differences</div>
-                    <div id="table-diff" class="stat-value">0</div>
-                </div>
-                
-                <div class="stat-item">
-                    <div class="stat-label">Total Differences</div>
-                    <div id="total-diff" class="stat-value">0</div>
-                </div>
-            </div>
+            <table class="history-table">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Files Compared</th>
+                        <th>Differences</th>
+                        <th>Report</th>
+                    </tr>
+                </thead>
+                <tbody id="history-table-body">
+                    <!-- History entries will be added here -->
+                </tbody>
+            </table>
             
-            <div class="result-card">
-                <h3>Files Compared</h3>
-                <p><strong>First PDF:</strong> <span id="file1-name"></span></p>
-                <p><strong>Second PDF:</strong> <span id="file2-name"></span></p>
-                <p><strong>Comparison Date:</strong> <span id="comparison-date"></span></p>
-            </div>
-            
-            <div class="text-center">
-                <a id="report-link" href="#" target="_blank" class="report-link">View Detailed Report</a>
+            <div id="history-empty" style="text-align: center; padding: 20px;">
+                <p>No comparison history available.</p>
             </div>
         </div>
         
         <div class="features">
             <div class="feature-card">
-                <h3 class="feature-title">Advanced Table Detection</h3>
+                <h3 class="feature-title">
+                    <span class="feature-icon">1</span>
+                    Advanced Table Detection
+                </h3>
                 <ul>
-                    <li>Detects tables even without borders</li>
-                    <li>Handles multi-page tables</li>
-                    <li>Identifies nested tables</li>
-                    <li>Preserves table structures</li>
+                    <li>Detects tables even without borders or missing borders</li>
+                    <li>Recognizes and merges multi-page tables automatically</li>
+                    <li>Identifies and visualizes nested tables with clear hierarchy</li>
+                    <li>Character-level alignment for accurate text extraction</li>
                 </ul>
             </div>
             
             <div class="feature-card">
-                <h3 class="feature-title">Intelligent Comparison</h3>
+                <h3 class="feature-title">
+                    <span class="feature-icon">2</span>
+                    Content-Based Matching
+                </h3>
                 <ul>
-                    <li>Content-based matching for tables</li>
-                    <li>Recognizes tables moved between pages</li>
-                    <li>Detailed cell-level differences</li>
-                    <li>Highlights specific text changes</li>
+                    <li>Matches tables by content regardless of page position</li>
+                    <li>Semantic matching for similar content across files</li>
+                    <li>Identifies moved tables between different pages</li>
+                    <li>Cell-level difference detection with smart fuzzy matching</li>
                 </ul>
             </div>
             
             <div class="feature-card">
-                <h3 class="feature-title">Executive-Ready Reports</h3>
+                <h3 class="feature-title">
+                    <span class="feature-icon">3</span>
+                    Enhanced Visual Reports
+                </h3>
                 <ul>
-                    <li>Clean, visual side-by-side diffs</li>
-                    <li>Comprehensive summary statistics</li>
-                    <li>Color-coded differences</li>
-                    <li>Interactive navigation</li>
+                    <li>Color-coded differences (red: deleted, blue: new, green: similar)</li>
+                    <li>Interactive cell highlighting on hover</li>
+                    <li>Synchronized scrolling between comparison panels</li>
+                    <li>Comprehensive navigation with page jumping</li>
                 </ul>
             </div>
         </div>
@@ -355,6 +611,33 @@
             const loading = document.getElementById('loading');
             const resultSection = document.getElementById('result-section');
             const alertsContainer = document.getElementById('alerts');
+            const progressBar = document.getElementById('progress-bar');
+            const progressStatus = document.getElementById('progress-status');
+            const tabs = document.querySelectorAll('.tab');
+            const tabContents = document.querySelectorAll('.tab-content');
+            
+            // Initialize history
+            let comparisonHistory = JSON.parse(localStorage.getItem('comparisonHistory') || '[]');
+            updateHistoryTable();
+            
+            // Tab switching
+            tabs.forEach(tab => {
+                tab.addEventListener('click', function() {
+                    // Remove active class from all tabs
+                    tabs.forEach(t => t.classList.remove('active'));
+                    tabContents.forEach(c => c.classList.remove('active'));
+                    
+                    // Add active class to clicked tab
+                    this.classList.add('active');
+                    const tabId = this.getAttribute('data-tab');
+                    document.getElementById(tabId + '-tab').classList.add('active');
+                    
+                    // Update history when switching to history tab
+                    if (tabId === 'history') {
+                        updateHistoryTable();
+                    }
+                });
+            });
             
             uploadForm.addEventListener('submit', function(e) {
                 e.preventDefault();
@@ -365,6 +648,9 @@
                 // Show loading indicator
                 loading.style.display = 'block';
                 resultSection.style.display = 'none';
+                progressBar.style.width = '0%';
+                progressBar.textContent = '0%';
+                progressStatus.textContent = 'Initializing comparison...';
                 
                 // Prepare form data
                 const formData = new FormData(uploadForm);
@@ -376,53 +662,154 @@
                 })
                 .then(response => response.json())
                 .then(data => {
-                    // Hide loading
-                    loading.style.display = 'none';
-                    
-                    if (data.status === 'success') {
-                        // Show result
-                        resultSection.style.display = 'block';
-                        
-                        // Update statistics
-                        document.getElementById('pages-diff').textContent = data.result.pages_with_differences;
-                        document.getElementById('text-diff').textContent = data.result.text_differences;
-                        document.getElementById('table-diff').textContent = data.result.table_differences;
-                        document.getElementById('total-diff').textContent = data.result.total_differences;
-                        
-                        // Update file info
-                        document.getElementById('file1-name').textContent = data.result.filename1;
-                        document.getElementById('file2-name').textContent = data.result.filename2;
-                        document.getElementById('comparison-date').textContent = data.result.comparison_date;
-                        
-                        // Set report link
-                        document.getElementById('report-link').href = data.result.report_url;
-                        
-                        // Show success message
-                        const alert = document.createElement('div');
-                        alert.className = 'alert alert-success';
-                        alert.textContent = data.message;
-                        alertsContainer.appendChild(alert);
+                    if (data.status === 'processing') {
+                        // Start polling for task status
+                        pollTaskStatus(data.task_id);
+                    } else if (data.status === 'success') {
+                        // Show result immediately
+                        showResult(data.result);
                     } else {
                         // Show error
-                        const alert = document.createElement('div');
-                        alert.className = 'alert alert-error';
-                        alert.textContent = data.message;
-                        alertsContainer.appendChild(alert);
+                        showError(data.message);
                     }
                 })
                 .catch(error => {
-                    // Hide loading
-                    loading.style.display = 'none';
-                    
-                    // Show error
-                    const alert = document.createElement('div');
-                    alert.className = 'alert alert-error';
-                    alert.textContent = 'An error occurred during comparison. Please try again.';
-                    alertsContainer.appendChild(alert);
-                    
+                    showError('An error occurred during comparison. Please try again.');
                     console.error('Error:', error);
                 });
             });
+            
+            function pollTaskStatus(taskId) {
+                const pollInterval = setInterval(() => {
+                    fetch(`/status/${taskId}`)
+                        .then(response => response.json())
+                        .then(data => {
+                            // Update progress
+                            progressBar.style.width = `${data.progress}%`;
+                            progressBar.textContent = `${data.progress}%`;
+                            
+                            if (data.status_message) {
+                                progressStatus.textContent = data.status_message;
+                            }
+                            
+                            if (data.status === 'completed') {
+                                // Clear interval and show result
+                                clearInterval(pollInterval);
+                                showResult(data.result);
+                            } else if (data.status === 'failed') {
+                                // Clear interval and show error
+                                clearInterval(pollInterval);
+                                showError(data.message || 'Comparison failed');
+                            }
+                        })
+                        .catch(error => {
+                            clearInterval(pollInterval);
+                            showError('Error checking task status');
+                            console.error('Error:', error);
+                        });
+                }, 1000);
+            }
+            
+            function showResult(result) {
+                // Hide loading
+                loading.style.display = 'none';
+                
+                // Show result
+                resultSection.style.display = 'block';
+                
+                // Update statistics
+                document.getElementById('pages-diff').textContent = result.pages_with_differences;
+                document.getElementById('text-diff').textContent = result.text_differences;
+                document.getElementById('table-diff').textContent = result.table_differences;
+                document.getElementById('total-diff').textContent = result.total_differences;
+                
+                // Update file info
+                document.getElementById('file1-name').textContent = result.filename1;
+                document.getElementById('file2-name').textContent = result.filename2;
+                document.getElementById('comparison-date').textContent = result.comparison_date;
+                
+                // Set report link
+                document.getElementById('report-link').href = result.report_url;
+                
+                // Show success message
+                const alert = document.createElement('div');
+                alert.className = 'alert alert-success';
+                alert.textContent = 'Comparison completed successfully!';
+                alertsContainer.appendChild(alert);
+                
+                // Add to history
+                addToHistory(result);
+            }
+            
+            function showError(message) {
+                // Hide loading
+                loading.style.display = 'none';
+                
+                // Show error
+                const alert = document.createElement('div');
+                alert.className = 'alert alert-error';
+                alert.textContent = message;
+                alertsContainer.appendChild(alert);
+            }
+            
+            function addToHistory(result) {
+                // Create history entry
+                const historyEntry = {
+                    date: new Date().toISOString(),
+                    file1: result.filename1,
+                    file2: result.filename2,
+                    differences: result.total_differences,
+                    reportUrl: result.report_url
+                };
+                
+                // Add to history and save
+                comparisonHistory.unshift(historyEntry);
+                
+                // Keep only last 10 entries
+                if (comparisonHistory.length > 10) {
+                    comparisonHistory = comparisonHistory.slice(0, 10);
+                }
+                
+                // Save to localStorage
+                localStorage.setItem('comparisonHistory', JSON.stringify(comparisonHistory));
+                
+                // Update history table
+                updateHistoryTable();
+            }
+            
+            function updateHistoryTable() {
+                const historyTableBody = document.getElementById('history-table-body');
+                const historyEmpty = document.getElementById('history-empty');
+                
+                // Clear table
+                historyTableBody.innerHTML = '';
+                
+                if (comparisonHistory.length === 0) {
+                    historyEmpty.style.display = 'block';
+                    document.querySelector('.history-table').style.display = 'none';
+                } else {
+                    historyEmpty.style.display = 'none';
+                    document.querySelector('.history-table').style.display = 'table';
+                    
+                    // Add entries
+                    comparisonHistory.forEach(entry => {
+                        const row = document.createElement('tr');
+                        
+                        // Format date
+                        const date = new Date(entry.date);
+                        const formattedDate = date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+                        
+                        row.innerHTML = `
+                            <td>${formattedDate}</td>
+                            <td>${entry.file1}<br>${entry.file2}</td>
+                            <td>${entry.differences}</td>
+                            <td><a href="${entry.reportUrl}" target="_blank" class="report-link">View Report</a></td>
+                        `;
+                        
+                        historyTableBody.appendChild(row);
+                    });
+                }
+            }
         });
     </script>
 </body>
