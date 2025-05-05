@@ -7,7 +7,9 @@ import hashlib
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional, Any
 from collections import defaultdict
-import fitz  # PyMuPDF library for PDF extraction
+from pdfminer.high_level import extract_pages
+from pdfminer.layout import LAParams, LTTextContainer, LTTextBox, LTTextLine, LTPage
+import pdfminer.high_level
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -82,41 +84,38 @@ class PDFExtractor:
         """
         logger.info("Extracting content from PDF")
         
-        # Create a PDF document object
-        pdf_document = fitz.open(stream=pdf_content, filetype="pdf")
+        # Create an in-memory file object
+        pdf_file = io.BytesIO(pdf_content)
         
         # Data structure to store content
         pdf_data = {}
         
+        # Extract pages using pdfminer
+        pages = list(extract_pages(pdf_file, laparams=LAParams()))
+        
         # Process each page
-        for page_idx in range(pdf_document.page_count):
-            page = pdf_document[page_idx]
+        for page_idx, page in enumerate(pages):
             page_num = page_idx + 1  # 1-based page numbering
             
-            # Extract text blocks
-            text_elements = []
-            for text_block in page.get_text("blocks"):
-                # Filter for actual text blocks (excluding images)
-                if text_block[6] == 0:  # Type 0 means text block
-                    text_elements.append({
-                        "type": "text",
-                        "content": text_block[4],
-                        "bbox": text_block[:4]  # x0, y0, x1, y1
-                    })
+            # Extract text elements
+            text_elements = self._extract_text_elements(page)
             
             # Extract tables using our enhanced table detection
-            tables = self._detect_tables(page)
+            tables = self._detect_tables(page, text_elements)
             
             # Combine all elements
             elements = text_elements + tables
+            
+            # Extract full text
+            page_text = self._extract_page_text(page)
             
             # Store page data
             pdf_data[page_num] = {
                 "elements": elements,
                 "page_number": page_num,
-                "width": page.rect.width,
-                "height": page.rect.height,
-                "text": page.get_text()
+                "width": page.width,
+                "height": page.height,
+                "text": page_text
             }
         
         # Post-process to find continuation tables across pages
@@ -125,20 +124,45 @@ class PDFExtractor:
         logger.info(f"Extracted {len(pdf_data)} pages with content")
         return pdf_data
     
-    def _detect_tables(self, page):
+    def _extract_text_elements(self, page):
+        """Extract text elements from a page."""
+        text_elements = []
+        
+        for element in page:
+            if isinstance(element, LTTextBox):
+                text = element.get_text().strip()
+                if text:
+                    bbox = (element.x0, element.y0, element.x1, element.y1)
+                    text_elements.append({
+                        "type": "text",
+                        "content": text,
+                        "bbox": bbox
+                    })
+        
+        return text_elements
+    
+    def _extract_page_text(self, page):
+        """Extract all text from a page as a single string."""
+        texts = []
+        for element in page:
+            if isinstance(element, LTTextContainer):
+                texts.append(element.get_text())
+        return "\n".join(texts)
+    
+    def _detect_tables(self, page, text_elements):
         """
         Enhanced table detection algorithm.
         Detects tables even with missing borders.
         """
         tables = []
         
-        # Get raw table data from PDF
-        raw_tables = self._extract_tables_from_page(page)
+        # Get raw table data from page
+        raw_tables = self._extract_tables_from_page(page, text_elements)
         
         # Process each detected table
         for table_idx, raw_table in enumerate(raw_tables):
             # Generate unique ID for the table
-            table_id = f"table_{page.number + 1}_{uuid.uuid4().hex[:8]}"
+            table_id = f"table_{page.pageid}_{uuid.uuid4().hex[:8]}"
             
             # Get content as list of lists (rows and cells)
             content = raw_table.get("content", [])
@@ -165,21 +189,19 @@ class PDFExtractor:
         
         return tables
     
-    def _extract_tables_from_page(self, page):
+    def _extract_tables_from_page(self, page, text_elements):
         """
         Extract tables from a page using heuristic analysis.
-        This is a placeholder for a more sophisticated algorithm that would:
-        1. Look for visual grid patterns
-        2. Analyze text alignment to find tabular structures
-        3. Identify cells using text positioning
+        Uses text positioning and alignment to identify tabular structures.
         """
         tables = []
         
-        # For demonstration, we'll use a simple approach to find potential tables
-        # In a real implementation, we would use more sophisticated algorithms
-        
-        # Get all text blocks that might form tables (potential rows)
-        blocks = page.get_text("blocks")
+        # Convert text elements to a format similar to blocks
+        blocks = []
+        for elem in text_elements:
+            x0, y0, x1, y1 = elem["bbox"]
+            text = elem["content"]
+            blocks.append((x0, y0, x1, y1, text, None, 0))  # Mimic the fitz block format
         
         # Group nearby blocks that may form tables
         potential_tables = self._group_blocks_into_tables(blocks)
@@ -239,8 +261,10 @@ class PDFExtractor:
     
     def _group_blocks_into_tables(self, blocks):
         """Group text blocks that may form tables based on spatial proximity."""
-        # Filter for text blocks only
-        text_blocks = [block for block in blocks if block[6] == 0]
+        # Filter for text blocks only (if type info is available)
+        text_blocks = [block for block in blocks if len(block) > 6 and block[6] == 0]
+        if not text_blocks and blocks:
+            text_blocks = blocks  # Use all blocks if type info not available
         
         # Simple approach: group blocks that are aligned in a grid pattern
         table_groups = []
