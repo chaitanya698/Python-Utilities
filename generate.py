@@ -414,8 +414,108 @@ class ReportGenerator:
             comparison_date=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         )      
         
+    def _standardize_table_differences(self, table_diffs):
+        """Standardize table difference statuses and prepare cell-level difference highlighting."""
+        standardized = []
+        
+        for diff in table_diffs:
+            status = diff.get("status", "")
+            
+            # Map statuses to standard visual categories
+            if status == "deleted":
+                visual_status = "deleted"  # RED
+            elif status == "inserted":
+                visual_status = "inserted"  # BLUE
+            elif status == "modified":
+                visual_status = "modified"  # RED
+            elif status == "moved":
+                visual_status = "moved"  # Show as moved
+            elif status == "matched":
+                visual_status = "matched"  # No highlighting
+            elif status == "similar":
+                visual_status = "similar"  # GREEN
+            else:
+                visual_status = status
+            
+            standardized_diff = diff.copy()
+            standardized_diff["visual_status"] = visual_status
+            
+            # Prepare cell-level difference highlighting
+            if "content1" in diff and "content2" in diff and diff.get("status") == "modified":
+                standardized_diff["cell_diffs"] = self._compute_cell_differences(diff["content1"], diff["content2"])
+            
+            # Add visual_status to nested tables if present
+            if "nested_table_objects" in standardized_diff:
+                standardized_diff["nested_table_objects"] = self._standardize_table_differences(
+                    standardized_diff["nested_table_objects"]
+                )
+            
+            standardized.append(standardized_diff)
+        
+        return standardized
+
+    def _compute_cell_differences(self, table1, table2):
+        """Compute cell-level differences between two tables."""
+        result = []
+        max_rows = max(len(table1), len(table2))
+        
+        for i in range(max_rows):
+            row_diff = []
+            
+            # Handle case where one table has fewer rows
+            if i >= len(table1):
+                # Entire row is inserted in second table
+                for _ in range(len(table2[i])):
+                    row_diff.append("inserted")
+            elif i >= len(table2):
+                # Entire row is deleted from first table
+                for _ in range(len(table1[i])):
+                    row_diff.append("deleted")
+            else:
+                # Compare cells in both tables
+                row1 = table1[i]
+                row2 = table2[i]
+                max_cols = max(len(row1), len(row2))
+                
+                for j in range(max_cols):
+                    if j >= len(row1):
+                        # Cell is inserted in second table
+                        row_diff.append("inserted")
+                    elif j >= len(row2):
+                        # Cell is deleted from first table
+                        row_diff.append("deleted")
+                    elif row1[j] == row2[j]:
+                        # Cells are identical
+                        row_diff.append("matched")
+                    elif self._calculate_similarity(str(row1[j]), str(row2[j])) > self.similarity_threshold:
+                        # Cells are similar
+                        row_diff.append("similar")
+                    else:
+                        # Cells are modified
+                        row_diff.append("modified")
+            
+            result.append(row_diff)
+        
+        return result
+
+    def _calculate_similarity(self, str1, str2):
+        """Calculate similarity between two strings."""
+        if not str1 and not str2:
+            return 1.0
+        if not str1 or not str2:
+            return 0.0
+            
+        # Simple Jaccard similarity for demonstration
+        set1 = set(str1.lower().split())
+        set2 = set(str2.lower().split())
+        
+        intersection = len(set1.intersection(set2))
+        union = len(set1.union(set2))
+        
+        return intersection / union if union > 0 else 0.0
+    
     def _template_str(self):
-        """Return the HTML template string for the comparison report."""
+        """Return the simplified HTML template string with side-by-side comparison and highlighted differences."""
         return """
         <!DOCTYPE html>
         <html lang="en">
@@ -444,7 +544,7 @@ class ReportGenerator:
                 header {
                     background-color: #4285F4;
                     color: white;
-                    padding: 20px;
+                    padding: 15px;
                     margin-bottom: 20px;
                 }
                 
@@ -462,12 +562,12 @@ class ReportGenerator:
                 .stat-item {
                     background-color: #f8f9fa;
                     border-radius: 4px;
-                    padding: 15px;
+                    padding: 10px;
                     text-align: center;
                 }
                 
                 .stat-value {
-                    font-size: 24px;
+                    font-size: 20px;
                     font-weight: bold;
                     color: #4285F4;
                     margin: 5px 0;
@@ -483,6 +583,12 @@ class ReportGenerator:
                     flex-wrap: wrap;
                     gap: 5px;
                     margin-bottom: 20px;
+                    position: sticky;
+                    top: 0;
+                    background: white;
+                    padding: 10px 0;
+                    z-index: 100;
+                    border-bottom: 1px solid #eee;
                 }
                 
                 .page-button {
@@ -506,16 +612,16 @@ class ReportGenerator:
                 }
                 
                 .page-section {
-                    margin-bottom: 30px;
+                    margin-bottom: 20px;
                     border: 1px solid #eee;
                     border-radius: 4px;
-                    padding: 20px;
+                    padding: 15px;
                 }
                 
                 .page-header {
                     background-color: #f8f9fa;
                     padding: 10px;
-                    margin: -20px -20px 20px -20px;
+                    margin: -15px -15px 15px -15px;
                     border-bottom: 1px solid #eee;
                     display: flex;
                     justify-content: space-between;
@@ -527,114 +633,50 @@ class ReportGenerator:
                     color: #4285F4;
                 }
                 
-                .differences-section {
-                    margin-top: 15px;
-                }
-                
                 .difference-item {
-                    margin-bottom: 20px;
+                    margin-bottom: 15px;
                     border: 1px solid #eee;
                     border-radius: 4px;
                     overflow: hidden;
                 }
                 
                 .difference-header {
-                    padding: 10px 15px;
+                    padding: 8px 12px;
                     background-color: #f8f9fa;
                     border-bottom: 1px solid #eee;
                     font-weight: bold;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
                 }
                 
                 .difference-content {
-                    padding: 15px;
-                }
-                
-                /* Text difference styles */
-                .text-difference {
-                    display: grid;
-                    grid-template-columns: 1fr 1fr;
-                    gap: 20px;
-                }
-                
-                .text-source1, .text-source2 {
-                    padding: 10px;
-                    border: 1px solid #eee;
-                    border-radius: 4px;
-                    background-color: #f9f9f9;
-                }
-                
-                /* Table difference styles */
-                .table-diff-container {
                     display: flex;
                     width: 100%;
+                }
+                
+                .difference-side {
+                    flex: 1;
+                    padding: 10px;
+                    border-right: 1px solid #eee;
                     overflow-x: auto;
                 }
                 
-                .table-diff-left, .table-diff-right {
-                    flex: 1;
-                    padding: 10px;
-                    min-width: 300px;
+                .difference-side:last-child {
+                    border-right: none;
                 }
                 
-                .diff-table {
-                    width: 100%;
-                    border-collapse: collapse;
-                    font-size: 14px;
-                }
-                
-                .diff-table th, .diff-table td {
-                    border: 1px solid #ddd;
-                    padding: 8px;
-                    text-align: left;
-                }
-                
-                .diff-table th {
-                    background-color: #f2f2f2;
-                    position: sticky;
-                    top: 0;
-                }
-                
-                .diff-table tr:nth-child(even) {
-                    background-color: #f9f9f9;
-                }
-                
-                .row-index {
+                .side-header {
                     font-weight: bold;
-                    text-align: center;
-                    background-color: #f2f2f2;
+                    margin-bottom: 10px;
+                    padding-bottom: 5px;
+                    border-bottom: 1px solid #eee;
                 }
                 
-                /* Cell status styles */
-                .similar { 
-                    background-color: #EDFFF0; 
-                    color: #00AA00; 
-                }
-                
-                .modified { 
-                    background-color: #FCF8E3; 
-                    color: #EA4335; 
-                }
-                
-                .deleted { 
-                    background-color: #FFEDED; 
-                    color: #FF0000; 
-                }
-                
-                .inserted { 
-                    background-color: #EDF5FF; 
-                    color: #0000FF; 
-                }
-                
-                .empty {
-                    background-color: #f9f9f9;
-                    color: #999;
-                }
-                
-                /* Status indicators */
                 .status-badge {
                     display: inline-block;
-                    padding: 4px 8px;
-                    border-radius: 4px;
+                    padding: 3px 6px;
+                    border-radius: 3px;
                     font-size: 12px;
                     font-weight: bold;
                     text-transform: uppercase;
@@ -665,17 +707,108 @@ class ReportGenerator:
                     color: #0C5460;
                 }
                 
-                /* Nested table styles */
-                .nested-tables {
-                    margin-top: 15px;
-                    padding-left: 20px;
-                    border-left: 3px solid #4285F4;
+                /* Cell status styles */
+                .cell-similar { 
+                    background-color: #EDFFF0; 
+                    color: #00AA00;
+                    border: 1px solid #00AA00 !important;
+                }
+                
+                .cell-modified { 
+                    background-color: #FCF8E3; 
+                    color: #EA4335;
+                    border: 1px solid #EA4335 !important;
+                }
+                
+                .cell-deleted { 
+                    background-color: #FFEDED; 
+                    color: #FF0000;
+                    border: 1px solid #FF0000 !important;
+                }
+                
+                .cell-inserted { 
+                    background-color: #EDF5FF; 
+                    color: #0000FF;
+                    border: 1px solid #0000FF !important;
+                }
+                
+                /* Text difference styles */
+                .text-similar { 
+                    background-color: #EDFFF0; 
+                    color: #00AA00; 
+                    padding: 2px;
+                }
+                
+                .text-modified { 
+                    background-color: #FCF8E3; 
+                    color: #EA4335; 
+                    padding: 2px;
+                }
+                
+                .text-deleted { 
+                    background-color: #FFEDED; 
+                    color: #FF0000; 
+                    padding: 2px;
+                }
+                
+                .text-inserted { 
+                    background-color: #EDF5FF; 
+                    color: #0000FF; 
+                    padding: 2px;
+                }
+                
+                /* Color Legend */
+                .diff-legend {
+                    display: flex;
+                    flex-wrap: wrap;
+                    gap: 10px;
+                    padding: 12px;
+                    background-color: #f8f8f8;
+                    border-radius: 5px;
+                    margin: 15px 0;
+                }
+                
+                .legend-item {
+                    display: flex;
+                    align-items: center;
+                    font-size: 0.9rem;
+                    margin-right: 15px;
+                }
+                
+                .legend-color {
+                    width: 16px;
+                    height: 16px;
+                    border-radius: 3px;
+                    margin-right: 6px;
+                }
+                
+                /* Table styles */
+                .diff-table {
+                    width: 100%;
+                    border-collapse: collapse;
+                    font-size: 14px;
+                    table-layout: fixed;
+                }
+                
+                .diff-table th, .diff-table td {
+                    border: 1px solid #ddd;
+                    padding: 8px;
+                    text-align: left;
+                    word-wrap: break-word;
+                    max-width: 250px;
+                }
+                
+                .diff-table th {
+                    background-color: #f2f2f2;
+                    font-weight: bold;
+                    position: sticky;
+                    top: 0;
                 }
                 
                 .metadata-table {
                     width: 100%;
                     border-collapse: collapse;
-                    margin-bottom: 20px;
+                    margin-bottom: 15px;
                 }
                 
                 .metadata-table th, .metadata-table td {
@@ -689,96 +822,25 @@ class ReportGenerator:
                     width: 200px;
                 }
                 
-                /* Legend */
-                .diff-legend {
-                    display: flex;
-                    flex-wrap: wrap;
-                    gap: 10px;
-                    padding: 15px;
-                    background-color: #f8f8f8;
-                    border-radius: 5px;
-                    margin: 15px 0;
-                }
-                
-                .legend-item {
-                    display: flex;
-                    align-items: center;
-                    font-size: 0.9rem;
-                }
-                
-                .legend-color {
-                    width: 16px;
-                    height: 16px;
-                    border-radius: 3px;
-                    margin-right: 6px;
-                }
-                
-                /* Table of contents */
-                .toc {
-                    background-color: #f8f9fa;
-                    padding: 15px;
-                    border-radius: 4px;
-                    margin-bottom: 20px;
-                }
-                
-                .toc-title {
-                    margin-top: 0;
-                    margin-bottom: 10px;
-                }
-                
-                .toc-list {
-                    list-style-type: none;
-                    padding-left: 0;
-                }
-                
-                .toc-item {
-                    margin-bottom: 5px;
-                }
-                
-                .toc-link {
-                    text-decoration: none;
-                    color: #4285F4;
-                }
-                
-                .toc-link:hover {
-                    text-decoration: underline;
-                }
-                
-                /* Page anchors */
-                .page-anchor {
-                    display: block;
-                    position: relative;
-                    top: -50px;
-                    visibility: hidden;
-                }
-                
                 /* Responsive adjustments */
                 @media (max-width: 768px) {
-                    .summary {
-                        grid-template-columns: 1fr 1fr;
-                    }
-                    
-                    .text-difference {
-                        grid-template-columns: 1fr;
-                    }
-                    
-                    .table-diff-container {
+                    .difference-content {
                         flex-direction: column;
                     }
                     
-                    .table-diff-left, .table-diff-right {
-                        min-width: 100%;
-                    }
-                }
-                
-                @media (max-width: 480px) {
-                    .summary {
-                        grid-template-columns: 1fr;
+                    .difference-side {
+                        border-right: none;
+                        border-bottom: 1px solid #eee;
+                        margin-bottom: 10px;
                     }
                     
-                    .page-header {
-                        flex-direction: column;
-                        align-items: flex-start;
+                    .difference-side:last-child {
+                        border-bottom: none;
+                        margin-bottom: 0;
+                    }
+                    
+                    .diff-table th, .diff-table td {
+                        max-width: none;
                     }
                 }
             </style>
@@ -829,16 +891,6 @@ class ReportGenerator:
                         <div class="stat-label">Table Differences</div>
                         <div class="stat-value">{{ summary.total_table_differences }}</div>
                     </div>
-                    
-                    <div class="stat-item">
-                        <div class="stat-label">Total Differences</div>
-                        <div class="stat-value">{{ summary.total_differences }}</div>
-                    </div>
-                    
-                    <div class="stat-item">
-                        <div class="stat-label">Changed Pages %</div>
-                        <div class="stat-value">{{ summary.percentage_changed_pages }}%</div>
-                    </div>
                 </div>
                 
                 <!-- Color Legend -->
@@ -861,18 +913,6 @@ class ReportGenerator:
                     </div>
                 </div>
                 
-                <!-- Table of Contents -->
-                <div class="toc">
-                    <h3 class="toc-title">Table of Contents</h3>
-                    <ul class="toc-list">
-                        {% for page_num in range(1, results.max_pages + 1) %}
-                        <li class="toc-item">
-                            <a href="#page-{{ page_num }}" class="toc-link">Page {{ page_num }}</a>
-                        </li>
-                        {% endfor %}
-                    </ul>
-                </div>
-                
                 <!-- Page Navigation -->
                 <div class="page-nav">
                     {% for page_num in range(1, results.max_pages + 1) %}
@@ -882,8 +922,7 @@ class ReportGenerator:
                 
                 <!-- Pages Content -->
                 {% for page_num in range(1, results.max_pages + 1) %}
-                <a id="page-{{ page_num }}" class="page-anchor"></a>
-                <div class="page-section">
+                <div id="page-{{ page_num }}" class="page-section">
                     <div class="page-header">
                         <h2 class="page-title">Page {{ page_num }}</h2>
                         
@@ -898,96 +937,160 @@ class ReportGenerator:
                     
                     <!-- Text Differences -->
                     {% if results.pages[page_num].text_differences|length > 0 %}
-                    <div class="differences-section">
-                        <h3>Text Differences ({{ results.pages[page_num].text_differences|length }})</h3>
+                    <h3>Text Differences ({{ results.pages[page_num].text_differences|length }})</h3>
+                    
+                    {% for diff in results.pages[page_num].text_differences %}
+                    <div class="difference-item">
+                        <div class="difference-header">
+                            <span class="status-badge status-{{ diff.visual_status }}">{{ diff.status }}</span>
+                            {% if diff.score %}
+                            <span>Similarity: {{ "%.2f"|format(diff.score * 100) }}%</span>
+                            {% endif %}
+                        </div>
                         
-                        {% for diff in results.pages[page_num].text_differences %}
-                        <div class="difference-item">
-                            <div class="difference-header">
-                                <span class="status-badge status-{{ diff.visual_status }}">{{ diff.status }}</span>
-                                {% if diff.score %}
-                                <span style="margin-left: 10px;">Similarity: {{ "%.2f"|format(diff.score * 100) }}%</span>
-                                {% endif %}
+                        <div class="difference-content">
+                            <div class="difference-side">
+                                <div class="side-header">PDF 1</div>
+                                <div class="text-{{ diff.visual_status }}">{{ diff.text1 or "Not present in PDF 1" }}</div>
                             </div>
                             
-                            <div class="difference-content">
-                                <div class="text-difference">
-                                    <div class="text-source1">
-                                        <strong>PDF 1:</strong>
-                                        <div>{{ diff.text1 }}</div>
-                                    </div>
-                                    
-                                    <div class="text-source2">
-                                        <strong>PDF 2:</strong>
-                                        <div>{{ diff.text2 }}</div>
-                                    </div>
-                                </div>
+                            <div class="difference-side">
+                                <div class="side-header">PDF 2</div>
+                                <div class="text-{{ diff.visual_status }}">{{ diff.text2 or "Not present in PDF 2" }}</div>
                             </div>
                         </div>
-                        {% endfor %}
                     </div>
+                    {% endfor %}
                     {% endif %}
                     
                     <!-- Table Differences -->
                     {% if results.pages[page_num].table_differences|length > 0 %}
-                    <div class="differences-section">
-                        <h3>Table Differences ({{ results.pages[page_num].table_differences|length }})</h3>
+                    <h3>Table Differences ({{ results.pages[page_num].table_differences|length }})</h3>
+                    
+                    {% for diff in results.pages[page_num].table_differences %}
+                    <div class="difference-item">
+                        <div class="difference-header">
+                            <span class="status-badge status-{{ diff.visual_status }}">{{ diff.status }}</span>
+                            
+                            {% if diff.similarity %}
+                            <span>Similarity: {{ "%.2f"|format(diff.similarity * 100) }}%</span>
+                            {% endif %}
+                            
+                            {% if diff.differences %}
+                            <span>Differences: {{ diff.differences }}</span>
+                            {% endif %}
+                        </div>
                         
-                        {% for diff in results.pages[page_num].table_differences %}
-                        <div class="difference-item">
-                            <div class="difference-header">
-                                <span class="status-badge status-{{ diff.visual_status }}">{{ diff.status }}</span>
-                                
-                                {% if diff.similarity %}
-                                <span style="margin-left: 10px;">Similarity: {{ "%.2f"|format(diff.similarity * 100) }}%</span>
-                                {% endif %}
-                                
-                                {% if diff.differences %}
-                                <span style="margin-left: 10px;">Differences: {{ diff.differences }}</span>
+                        <div class="difference-content">
+                            <!-- Table 1 -->
+                            <div class="difference-side">
+                                <div class="side-header">PDF 1</div>
+                                {% if diff.content1 %}
+                                <table class="diff-table">
+                                    {% for row_idx, row in enumerate(diff.content1) %}
+                                    <tr>
+                                        {% for cell_idx, cell in enumerate(row) %}
+                                        {% if diff.status == "modified" and diff.cell_diffs and row_idx < diff.cell_diffs|length and cell_idx < diff.cell_diffs[row_idx]|length %}
+                                        <td class="cell-{{ diff.cell_diffs[row_idx][cell_idx] }}">{{ cell }}</td>
+                                        {% else %}
+                                        <td>{{ cell }}</td>
+                                        {% endif %}
+                                        {% endfor %}
+                                    </tr>
+                                    {% endfor %}
+                                </table>
+                                {% else %}
+                                <p class="text-deleted">Table not present in PDF 1</p>
                                 {% endif %}
                             </div>
                             
-                            <div class="difference-content">
-                                {% if diff.diff_html %}
-                                {{ diff.diff_html|safe }}
-                                {% else %}
-                                <p>Tables are identical or have been moved without changes.</p>
-                                {% endif %}
-                                
-                                <!-- Nested Tables -->
-                                {% if diff.nested_table_objects and diff.nested_table_objects|length > 0 %}
-                                <div class="nested-tables">
-                                    <h4>Nested Tables ({{ diff.nested_table_objects|length }})</h4>
-                                    
-                                    {% for nested in diff.nested_table_objects %}
-                                    <div class="difference-item">
-                                        <div class="difference-header">
-                                            <span class="status-badge status-{{ nested.visual_status }}">{{ nested.status }}</span>
-                                            
-                                            {% if nested.similarity %}
-                                            <span style="margin-left: 10px;">Similarity: {{ "%.2f"|format(nested.similarity * 100) }}%</span>
-                                            {% endif %}
-                                            
-                                            {% if nested.differences %}
-                                            <span style="margin-left: 10px;">Differences: {{ nested.differences }}</span>
-                                            {% endif %}
-                                        </div>
-                                        
-                                        <div class="difference-content">
-                                            {% if nested.diff_html %}
-                                            {{ nested.diff_html|safe }}
-                                            {% else %}
-                                            <p>Nested tables are identical or have been moved without changes.</p>
-                                            {% endif %}
-                                        </div>
-                                    </div>
+                            <!-- Table 2 -->
+                            <div class="difference-side">
+                                <div class="side-header">PDF 2</div>
+                                {% if diff.content2 %}
+                                <table class="diff-table">
+                                    {% for row_idx, row in enumerate(diff.content2) %}
+                                    <tr>
+                                        {% for cell_idx, cell in enumerate(row) %}
+                                        {% if diff.status == "modified" and diff.cell_diffs and row_idx < diff.cell_diffs|length and cell_idx < diff.cell_diffs[row_idx]|length %}
+                                        <td class="cell-{{ diff.cell_diffs[row_idx][cell_idx] }}">{{ cell }}</td>
+                                        {% else %}
+                                        <td>{{ cell }}</td>
+                                        {% endif %}
+                                        {% endfor %}
+                                    </tr>
                                     {% endfor %}
-                                </div>
+                                </table>
+                                {% else %}
+                                <p class="text-inserted">Table not present in PDF 2</p>
                                 {% endif %}
                             </div>
                         </div>
-                        {% endfor %}
+                        
+                        <!-- Nested Tables - Simplified -->
+                        {% if diff.nested_table_objects and diff.nested_table_objects|length > 0 %}
+                        <div style="margin-top: 10px; padding: 10px; border-top: 1px dashed #ccc;">
+                            <h4>Nested Tables ({{ diff.nested_table_objects|length }})</h4>
+                            {% for nested in diff.nested_table_objects %}
+                            <div class="difference-item">
+                                <div class="difference-header">
+                                    <span class="status-badge status-{{ nested.visual_status }}">{{ nested.status }}</span>
+                                    {% if nested.similarity %}
+                                    <span>Similarity: {{ "%.2f"|format(nested.similarity * 100) }}%</span>
+                                    {% endif %}
+                                </div>
+                                
+                                <div class="difference-content">
+                                    <!-- Nested Table 1 -->
+                                    <div class="difference-side">
+                                        <div class="side-header">PDF 1</div>
+                                        {% if nested.content1 %}
+                                        <table class="diff-table">
+                                            {% for row_idx, row in enumerate(nested.content1) %}
+                                            <tr>
+                                                {% for cell_idx, cell in enumerate(row) %}
+                                                {% if nested.status == "modified" and nested.cell_diffs and row_idx < nested.cell_diffs|length and cell_idx < nested.cell_diffs[row_idx]|length %}
+                                                <td class="cell-{{ nested.cell_diffs[row_idx][cell_idx] }}">{{ cell }}</td>
+                                                {% else %}
+                                                <td>{{ cell }}</td>
+                                                {% endif %}
+                                                {% endfor %}
+                                            </tr>
+                                            {% endfor %}
+                                        </table>
+                                        {% else %}
+                                        <p class="text-deleted">Table not present in PDF 1</p>
+                                        {% endif %}
+                                    </div>
+                                    
+                                    <!-- Nested Table 2 -->
+                                    <div class="difference-side">
+                                        <div class="side-header">PDF 2</div>
+                                        {% if nested.content2 %}
+                                        <table class="diff-table">
+                                            {% for row_idx, row in enumerate(nested.content2) %}
+                                            <tr>
+                                                {% for cell_idx, cell in enumerate(row) %}
+                                                {% if nested.status == "modified" and nested.cell_diffs and row_idx < nested.cell_diffs|length and cell_idx < nested.cell_diffs[row_idx]|length %}
+                                                <td class="cell-{{ nested.cell_diffs[row_idx][cell_idx] }}">{{ cell }}</td>
+                                                {% else %}
+                                                <td>{{ cell }}</td>
+                                                {% endif %}
+                                                {% endfor %}
+                                            </tr>
+                                            {% endfor %}
+                                        </table>
+                                        {% else %}
+                                        <p class="text-inserted">Table not present in PDF 2</p>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
                     </div>
+                    {% endfor %}
                     {% endif %}
                     
                     {% else %}
@@ -1003,31 +1106,58 @@ class ReportGenerator:
                     // Highlight current page in navigation
                     const pageButtons = document.querySelectorAll('.page-button');
                     
-                    function updateActiveButton() {
-                        const scrollPos = window.scrollY;
-                        const pageAnchors = document.querySelectorAll('.page-anchor');
-                        
-                        pageAnchors.forEach((anchor, i) => {
-                            const rect = anchor.getBoundingClientRect();
-                            if (rect.top + window.scrollY - 100 <= scrollPos && (i === pageAnchors.length - 1 || 
-                                pageAnchors[i+1].getBoundingClientRect().top + window.scrollY - 100 > scrollPos)) {
-                                pageButtons.forEach(btn => btn.classList.remove('active'));
-                                pageButtons[i].classList.add('active');
+                    // Add click event to page buttons
+                    pageButtons.forEach((button) => {
+                        button.addEventListener('click', function(e) {
+                            e.preventDefault();
+                            
+                            // Remove active class from all buttons
+                            pageButtons.forEach(btn => btn.classList.remove('active'));
+                            
+                            // Add active class to clicked button
+                            this.classList.add('active');
+                            
+                            // Scroll to page section
+                            const targetId = this.getAttribute('href').substring(1);
+                            const targetElement = document.getElementById(targetId);
+                            
+                            if (targetElement) {
+                                window.scrollTo({
+                                    top: targetElement.offsetTop - 60,
+                                    behavior: 'smooth'
+                                });
                             }
                         });
+                    });
+                    
+                    // Set first page as active by default
+                    if (pageButtons.length > 0) {
+                        pageButtons[0].classList.add('active');
                     }
                     
-                    // Initial update
-                    updateActiveButton();
-                    
-                    // Update on scroll
-                    window.addEventListener('scroll', updateActiveButton);
+                    // Update active page on scroll
+                    window.addEventListener('scroll', function() {
+                        const pageAnchors = document.querySelectorAll('.page-section');
+                        const scrollPosition = window.scrollY + 100;
+                        
+                        pageAnchors.forEach((anchor, index) => {
+                            const nextAnchor = pageAnchors[index + 1];
+                            const isInView = 
+                                anchor.offsetTop <= scrollPosition && 
+                                (nextAnchor === undefined || nextAnchor.offsetTop > scrollPosition);
+                            
+                            if (isInView) {
+                                pageButtons.forEach(btn => btn.classList.remove('active'));
+                                pageButtons[index].classList.add('active');
+                            }
+                        });
+                    });
                 });
             </script>
         </body>
         </html>
-        """      
-        
+        """
+    
     @staticmethod
     def _safe(name):
         """Create a safe filename from the document name."""
