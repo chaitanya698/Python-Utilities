@@ -1,9 +1,4 @@
-"""
-main.py - Enhanced PDF Comparison Tool
---------------------------------------
-Integrates the improved modules for table detection and comparison with
-parallel processing and progress tracking
-"""
+
 import os
 import io
 import logging
@@ -158,13 +153,12 @@ def process_comparison_with_progress(task_id, filepath1, filepath2, filename1, f
         
         # Extract content from PDFs with enhanced table detection
         extractor = PDFExtractor(
-            similarity_threshold=0.85,  # Threshold for table content similarity
-            header_match_threshold=0.9,  # Threshold for header matching
-            nested_table_threshold=0.85,  # Containment threshold for nested tables
-            nested_area_ratio=0.75,      # Size ratio for nested tables
-            semantic_similarity_threshold=0.80  # Threshold for semantic matching
+        similarity_threshold=0.85,  # Threshold for table content similarity
+        header_match_threshold=0.9,  # Threshold for header matching
+        nested_table_threshold=0.85,  # Containment threshold for nested tables
+        nested_area_ratio=0.75,      # Size ratio for nested tables
+        semantic_similarity_threshold=0.80  # Threshold for semantic matching
         )
-        
         logger.info(f"Extracting content from {filename1}")
         pdf1_data = extractor.extract_pdf_content(pdf1_content)
         
