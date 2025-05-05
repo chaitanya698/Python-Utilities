@@ -1,16 +1,3 @@
-"""
-compare.py
-----------
-Enhanced diff engine for text & table comparison.
-
-Key improvements:
-* Semantic similarity-based matching for tables regardless of page position
-* Support for multi-page table comparison
-* Improved diff visualization with column-level highlighting
-* Detailed cell-level difference detection
-* Fuzzy and semantic matching for higher accuracy
-* Improved handling of tables with missing borders
-"""
 
 import logging
 import re
@@ -55,7 +42,7 @@ class PdfCompare:
     # ─── public ───────────────────────────────────────────────────
     def compare_pdfs(self, pdf1: Dict, pdf2: Dict) -> Dict:
         """
-        Compare two PDFs and generate detailed differences.
+        Compare two PDFs and generate detailed differences using content-based matching.
         
         Args:
             pdf1: First PDF structure from extractor
@@ -64,43 +51,36 @@ class PdfCompare:
         Returns:
             Dictionary with comparison results
         """
-        logger.info("Starting PDF comparison")
+        logger.info("Starting PDF comparison with content-based matching")
         max_pages = max(len(pdf1), len(pdf2))
         results = {"max_pages": max_pages, "pages": {}}
 
-        # Pre-process: collect all tables from both PDFs
+        # Pre-process: collect all tables and text from both PDFs with page information
         tables1 = list(self._collect_tables(pdf1))
         tables2 = list(self._collect_tables(pdf2))
+        
+        text_blocks1 = self._collect_text_blocks(pdf1)
+        text_blocks2 = self._collect_text_blocks(pdf2)
         
         logger.info(f"Found {len(tables1)} tables in first PDF and {len(tables2)} tables in second PDF")
         
         # Match tables across both PDFs using global matching (ignoring page position)
         table_matches = self._match_tables_global(tables1, tables2)
         
-        # Organize table matches by page for the report
-        tables_by_page = defaultdict(list)
-        for diff in table_matches:
-            # For regular tables
-            if diff.get("page1") is not None:
-                tables_by_page[diff.get("page1")].append(diff)
-            if diff.get("page2") is not None and diff.get("page1") != diff.get("page2"):
-                tables_by_page[diff.get("page2")].append(diff)
-
+        # Match text blocks across all pages
+        text_matches = self._match_text_blocks_global(text_blocks1, text_blocks2)
+        
+        # Organize matches by page for the report
+        tables_by_page = self._organize_table_matches_by_page(table_matches)
+        text_by_page = self._organize_text_matches_by_page(text_matches)
+        
         # Process each page
         for p in range(1, max_pages + 1):
-            # Get text elements from both PDFs
-            txt1 = pdf1.get(p, {"elements": []}).get("elements", [])
-            txt2 = pdf2.get(p, {"elements": []}).get("elements", [])
-            
-            # Filter for text-only elements
-            text1 = [e for e in txt1 if e["type"] == "text"]
-            text2 = [e for e in txt2 if e["type"] == "text"]
-            
-            # Perform text comparison
-            text_diff = self._compare_text_elements(text1, text2)
-            
             # Get table differences for this page
             table_diff = tables_by_page.get(p, [])
+            
+            # Get text differences for this page
+            text_diff = text_by_page.get(p, [])
             
             # Store results for this page
             results["pages"][p] = {
@@ -111,9 +91,140 @@ class PdfCompare:
         logger.info("PDF comparison completed")
         return results
 
+    # ─── text processing ──────────────────────────────────────────
+    def _collect_text_blocks(self, pdf_data):
+        """Extract all text elements from PDF data with page information."""
+        text_blocks = []
+        for pg, pdata in pdf_data.items():
+            for idx, elem in enumerate(pdata.get("elements", [])):
+                if elem.get("type") == "text":
+                    block = {
+                        "page": pg,
+                        "content": elem["content"],
+                        "index": idx,
+                        "element": elem,
+                        "hash": hashlib.md5(elem["content"].encode()).hexdigest()
+                    }
+                    text_blocks.append(block)
+        return text_blocks
+    
+    def _match_text_blocks_global(self, blocks1, blocks2):
+        """Match text blocks across all pages using content similarity."""
+        matches = []
+        matched_blocks2 = set()
+        
+        for block1 in blocks1:
+            best_match = None
+            best_score = self.fuzzy_match_threshold
+            
+            for i, block2 in enumerate(blocks2):
+                if i in matched_blocks2:
+                    continue
+                    
+                # Check for exact match first
+                if block1["hash"] == block2["hash"]:
+                    score = 1.0
+                else:
+                    # Calculate similarity with a more accurate algorithm
+                    # This is a key fix for proper text difference detection
+                    content1 = block1["content"].strip()
+                    content2 = block2["content"].strip()
+                    
+                    # Use SequenceMatcher for more accurate difference detection
+                    score = SequenceMatcher(None, content1, content2).ratio()
+                    
+                    # Improve scoring for partially matching text
+                    # This helps identify text that has been edited slightly
+                    if score < self.fuzzy_match_threshold:
+                        # Check if one is a subset of the other (insertions or deletions)
+                        if content1 in content2 or content2 in content1:
+                            # Boost score for partial matches
+                            score = max(score, self.fuzzy_match_threshold + 0.05)
+                
+                if score > best_score:
+                    best_score = score
+                    best_match = (i, block2)
+            
+            # Determine status with enhanced logic
+            if best_match:
+                i, block2 = best_match
+                
+                # Better classification of changes
+                if block1["page"] != block2["page"]:
+                    status = "moved"  # Text moved to a different page
+                elif best_score == 1.0:
+                    status = "matched"  # Exact match
+                elif best_score >= 0.95:
+                    status = "similar"  # Very similar, minor changes
+                else:
+                    status = "modified"  # Significant changes
+                    
+                matches.append({
+                    "block1": block1,
+                    "block2": block2,
+                    "status": status,
+                    "score": best_score,
+                    "page1": block1["page"],
+                    "page2": block2["page"]
+                })
+                matched_blocks2.add(i)
+            else:
+                # No match found - text only in first PDF
+                matches.append({
+                    "block1": block1,
+                    "block2": None,
+                    "status": "deleted",
+                    "score": 0.0,
+                    "page1": block1["page"],
+                    "page2": None
+                })
+        
+        # Add text blocks that only exist in second PDF
+        for i, block2 in enumerate(blocks2):
+            if i not in matched_blocks2:
+                matches.append({
+                    "block1": None,
+                    "block2": block2,
+                    "status": "inserted",
+                    "score": 0.0,
+                    "page1": None,
+                    "page2": block2["page"]
+                })
+        
+        return matches
+    
+    def _organize_text_matches_by_page(self, text_matches):
+        """Organize text matches by page for report generation."""
+        text_by_page = defaultdict(list)
+        
+        for match in text_matches:
+            # Add to source page
+            if match["page1"]:
+                text_by_page[match["page1"]].append({
+                    "status": match["status"],
+                    "text1": match["block1"]["content"] if match["block1"] else "",
+                    "text2": match["block2"]["content"] if match["block2"] else "",
+                    "score": match["score"],
+                    "page1": match["page1"],
+                    "page2": match["page2"]
+                })
+            
+            # Add to target page if moved
+            if match["status"] in ["moved", "inserted"] and match["page2"] and match["page2"] != match.get("page1"):
+                text_by_page[match["page2"]].append({
+                    "status": match["status"],
+                    "text1": match["block1"]["content"] if match["block1"] else "",
+                    "text2": match["block2"]["content"] if match["block2"] else "",
+                    "score": match["score"],
+                    "page1": match["page1"],
+                    "page2": match["page2"]
+                })
+        
+        return text_by_page
+
     # ─── table processing ─────────────────────────────────────────
     def _collect_tables(self, pdf_data):
-        """Extract all tables from PDF data."""
+        """Extract all tables from PDF data with page information."""
         for pg, pdata in pdf_data.items():
             for el in pdata.get("elements", []):
                 if el.get("type") == "table":
@@ -121,13 +232,13 @@ class PdfCompare:
 
     def _match_tables_global(self, tables1, tables2) -> List[Dict]:
         """
-        Match tables between two PDFs using content-based and semantic similarity.
+        Match tables between two PDFs using content-based matching, ignoring page positions.
         
         This enhanced algorithm:
-        1. Prioritizes content matching over position matching
-        2. Uses semantic similarity for matching tables with similar content
-        3. Handles multi-page tables correctly
-        4. Provides detailed cell-level diff information
+        1. Uses content hashes for exact matches
+        2. Uses semantic similarity for similar content
+        3. Properly handles multi-page tables
+        4. Avoids duplicate reporting
         """
         results = []
         matched_tables2 = set()
@@ -156,7 +267,7 @@ class PdfCompare:
             ))
             matched_tables2.add((pg2, t2["table_id"]))
         
-        # Step 2: For remaining tables, use fuzzy similarity matching
+        # Step 2: For remaining tables, use similarity matching
         remaining1 = [(pg, t) for pg, t in tables1 
                      if not any((pg, t) == match[0] for match in content_matches)]
         remaining2 = [(pg, t) for pg, t in tables2 
@@ -193,6 +304,58 @@ class PdfCompare:
         logger.info(f"Matched tables: {len(content_matches) + len(semantic_matches)}")
         return results
     
+    def _organize_table_matches_by_page(self, table_matches):
+        """
+        Organize table matches by page for report generation.
+        Avoids duplicate table entries in the report.
+        """
+        tables_by_page = defaultdict(list)
+        
+        # Keep track of table IDs already added to avoid duplicates
+        added_tables = set()
+        
+        for diff in table_matches:
+            # Create a unique identifier for this table comparison
+            table_key = (diff.get("table_id1"), diff.get("table_id2"), diff.get("status"))
+            
+            # Skip if already added
+            if table_key in added_tables:
+                continue
+                
+            added_tables.add(table_key)
+            
+            # Add to source page
+            if diff.get("page1") is not None:
+                tables_by_page[diff.get("page1")].append(diff)
+            
+            # Add to target page only if it's a move to a different page
+            if diff.get("status") == "moved" and diff.get("page2") is not None and diff.get("page1") != diff.get("page2"):
+                # Create a copy for the target page with appropriate status
+                moved_copy = diff.copy()
+                moved_copy["status"] = "moved_to"
+                tables_by_page[diff.get("page2")].append(moved_copy)
+        
+        return tables_by_page
+    
+    def _match_by_content_hash(self, tables1, tables2) -> List[Tuple[Tuple, Tuple]]:
+        """Match tables using content hash for exact content matching."""
+        matches = []
+        
+        # Build lookup by content hash for second PDF's tables
+        hash_to_table2 = defaultdict(list)
+        for pg, table in tables2:
+            if "content_hash" in table and table["content_hash"]:
+                hash_to_table2[table["content_hash"]].append((pg, table))
+        
+        # Find exact matches
+        for pg1, t1 in tables1:
+            if "content_hash" in t1 and t1["content_hash"]:
+                for pg2, t2 in hash_to_table2.get(t1["content_hash"], []):
+                    matches.append(((pg1, t1), (pg2, t2)))
+                    break  # Only match each table once
+        
+        return matches
+    
     def _match_tables_by_similarity(self, tables1, tables2):
         """
         Match tables using multiple similarity metrics regardless of page position.
@@ -202,32 +365,54 @@ class PdfCompare:
             return []
             
         matches = []
+        
+        # Create a similarity matrix for all possible pairs
         similarity_matrix = []
+        all_similarities = []
         
         # For each table in first PDF
-        for pg1, t1 in tables1:
+        for i, (pg1, t1) in enumerate(tables1):
             similarities = []
             
             # Compare with each table in second PDF
-            for pg2, t2 in tables2:
+            for j, (pg2, t2) in enumerate(tables2):
                 # Calculate similarity using multiple metrics
                 similarity = self._calculate_table_similarity(t1, t2)
-                similarities.append((similarity, pg2, t2))
+                
+                # Store similarity with table indices
+                similarities.append((similarity, j))
+                all_similarities.append((similarity, i, j))
                 
             # Sort by similarity (highest first)
             similarities.sort(reverse=True)
             similarity_matrix.append(similarities)
         
-        # Use a greedy algorithm to select best non-conflicting matches
+        # Sort all similarities globally to ensure we match the most similar tables first
+        all_similarities.sort(reverse=True)
+        
+        # Use a global matching algorithm to find optimal matches
+        used_tables1 = set()
         used_tables2 = set()
         
-        # Process in order of similarity
-        for i, sims in enumerate(similarity_matrix):
-            for sim, pg2, t2 in sims:
-                if sim >= self.semantic_similarity_threshold and (pg2, t2["table_id"]) not in used_tables2:
-                    matches.append((tables1[i], (pg2, t2), sim))
-                    used_tables2.add((pg2, t2["table_id"]))
-                    break
+        # Process matches in order of decreasing similarity
+        for sim, i, j in all_similarities:
+            # Only consider sufficiently similar tables
+            if sim < self.semantic_similarity_threshold:
+                continue
+                
+            # Skip if either table is already matched
+            if i in used_tables1 or j in used_tables2:
+                continue
+                
+            # Add this match
+            pg1, t1 = tables1[i]
+            pg2, t2 = tables2[j]
+            
+            matches.append(((pg1, t1), (pg2, t2), sim))
+            
+            # Mark both tables as used
+            used_tables1.add(i)
+            used_tables2.add(j)
         
         return matches
     
@@ -238,29 +423,34 @@ class PdfCompare:
         2. Structure similarity
         3. Semantic similarity
         """
-        # 1. Content similarity - check if cells have similar text
+        # 1. Check if tables have content
         if not t1.get("content") or not t2.get("content"):
             return 0.0
             
-        # 2. Structure similarity - check if tables have similar dimensions
         content1 = t1["content"]
         content2 = t2["content"]
         
         if not content1 or not content2:
             return 0.0
+        
+        # 2. Check if tables are identical using content hash
+        if t1.get("content_hash") and t2.get("content_hash") and t1["content_hash"] == t2["content_hash"]:
+            return 1.0
             
-        # Compare row count
-        row_ratio = min(len(content1), len(content2)) / max(len(content1), len(content2))
+        # 3. Structure similarity - check if tables have similar dimensions
+        row_count1 = len(content1)
+        row_count2 = len(content2)
+        row_ratio = min(row_count1, row_count2) / max(row_count1, row_count2) if max(row_count1, row_count2) > 0 else 0
         
         # Compare column count
         col_count1 = len(content1[0]) if content1 and content1[0] else 0
         col_count2 = len(content2[0]) if content2 and content2[0] else 0
         col_ratio = min(col_count1, col_count2) / max(col_count1, col_count2) if max(col_count1, col_count2) > 0 else 0
         
-        # 3. Cell content similarity
+        # 4. Cell content similarity
         cell_similarity = self._calculate_cell_content_similarity(content1, content2)
         
-        # 4. Semantic similarity - compare table embeddings if available
+        # 5. Semantic similarity - compare table meaning
         semantic_similarity = 0.5  # Default value
         table1_text = self._table_to_text(t1)
         table2_text = self._table_to_text(t2)
@@ -273,15 +463,18 @@ class PdfCompare:
                 
                 # Calculate cosine similarity
                 semantic_similarity = np.dot(emb1, emb2)
+                
+                # Normalize to 0-1 range
+                semantic_similarity = max(0.0, min(1.0, semantic_similarity))
             except Exception as e:
                 logger.warning(f"Error calculating semantic similarity: {str(e)}")
         
-        # Combine similarities with weights - prioritizing content over position
+        # Combine similarities with weights
         combined_similarity = (
-            cell_similarity * 0.7 +  # Increased weight for content similarity
-            row_ratio * 0.05 +      # Decreased weight for row structure
-            col_ratio * 0.05 +      # Decreased weight for column structure
-            semantic_similarity * 0.2  # Maintain weight for semantic similarity
+            cell_similarity * 0.6 +       # Cell content is most important
+            row_ratio * 0.1 +             # Row structure matters somewhat
+            col_ratio * 0.1 +             # Column structure matters somewhat
+            semantic_similarity * 0.2     # Overall meaning matters
         )
         
         return combined_similarity
@@ -324,129 +517,14 @@ class PdfCompare:
                     total_cells -= 1
         
         return matching_cells / max(1, total_cells)
-    
-    def _match_by_content_hash(self, tables1, tables2) -> List[Tuple[Tuple, Tuple]]:
-        """Match tables using content hash for exact content matching."""
-        matches = []
-        
-        # Build lookup by content hash for second PDF's tables
-        hash_to_table2 = defaultdict(list)
-        for pg, table in tables2:
-            if "content_hash" in table and table["content_hash"]:
-                hash_to_table2[table["content_hash"]].append((pg, table))
-        
-        # Find exact matches
-        for pg1, t1 in tables1:
-            if "content_hash" in t1 and t1["content_hash"]:
-                for pg2, t2 in hash_to_table2.get(t1["content_hash"], []):
-                    matches.append(((pg1, t1), (pg2, t2)))
-                    break  # Only match each table once
-        
-        return matches
-    
-    @functools.lru_cache(maxsize=128)
-    def _get_table_embedding(self, table_content_str):
-        """Get and cache table embeddings."""
-        # If already in cache, return it
-        hash_key = hashlib.md5(table_content_str.encode()).hexdigest()
-        if hash_key in self.embedding_cache:
-            return self.embedding_cache[hash_key]
-            
-        # Otherwise, compute and cache
-        embedding = self.embedding_model.encode([table_content_str])[0]
-        self.embedding_cache[hash_key] = embedding
-        return embedding
-    
-    def _table_to_text(self, table):
-        """Convert table to text representation for semantic matching."""
-        if not table.get("content"):
-            return ""
-        
-        # Join cells with spaces, rows with newlines
-        return "\n".join(" ".join(cell for cell in row if cell) 
-                         for row in table["content"] if any(row))
-    
-    def _compare_tables(self, table1: List[List[str]], table2: List[List[str]]) -> Tuple[float, int, str]:
-        """
-        Compare two tables and return similarity score, difference count, and HTML diff.
-        
-        Returns:
-            Tuple of (similarity_score, differences_count, diff_html)
-        """
-        if not table1 or not table2:
-            return 0.0, 0, ""
-        
-        # Create a cache key for this comparison
-        cache_key = (
-            hashlib.md5(str(table1).encode()).hexdigest(),
-            hashlib.md5(str(table2).encode()).hexdigest()
-        )
-        
-        # Check if we have this comparison in cache
-        if cache_key in self.table_comparison_cache:
-            return self.table_comparison_cache[cache_key]
-        
-        # Calculate overall similarity
-        str_a = "\n".join("∥".join(r) for r in table1)
-        str_b = "\n".join("∥".join(r) for r in table2)
-        similarity = SequenceMatcher(None, str_a, str_b).ratio()
-        
-        # If tables are very different, just mark them as such
-        if similarity < self.diff_threshold:
-            result = (similarity, max(len(table1), len(table2)), self._generate_diff_html(table1, table2))
-            self.table_comparison_cache[cache_key] = result
-            return result
-        
-        # Cell-by-cell comparison for detailed differences
-        differences = 0
-        diff_html = ""
-        
-        # Generate an HTML diff with cell-level highlighting
-        if similarity < 1.0:
-            diff_html = self._generate_diff_html(table1, table2)
-            
-            # Count differences (cells that don't match)
-            differences = self._count_cell_differences(table1, table2)
-        
-        result = (similarity, differences, diff_html)
-        self.table_comparison_cache[cache_key] = result
-        return result
-    
-    def _count_cell_differences(self, table1: List[List[str]], table2: List[List[str]]) -> int:
-        """Count the number of differing cells between two tables."""
-        diff_count = 0
-        rows = max(len(table1), len(table2))
-        
-        for i in range(rows):
-            # Get rows or empty lists if row index exceeds table size
-            row1 = table1[i] if i < len(table1) else []
-            row2 = table2[i] if i < len(table2) else []
-            
-            # Compare cells in this row
-            cols = max(len(row1), len(row2))
-            for j in range(cols):
-                cell1 = row1[j] if j < len(row1) else ""
-                cell2 = row2[j] if j < len(row2) else ""
-                
-                # Normalize cell content for comparison
-                norm_cell1 = self._normalize_cell(cell1)
-                norm_cell2 = self._normalize_cell(cell2)
-                
-                # Check if cells differ
-                if norm_cell1 != norm_cell2:
-                    # Check for fuzzy match
-                    if not self._fuzzy_match_cells(norm_cell1, norm_cell2):
-                        diff_count += 1
-        
-        return diff_count
-    
+
     def _normalize_cell(self, cell: str) -> str:
         """Normalize cell content for better comparison."""
         if not cell:
             return ""
         # Remove extra whitespace and convert to lowercase
-        return re.sub(r'\s+', ' ', cell.strip().lower())
-    
+        return re.sub(r'\s+', ' ', str(cell).strip().lower())
+
     def _fuzzy_match_cells(self, cell1: str, cell2: str) -> bool:
         """Check if two cells are similar enough to be considered matching."""
         if not cell1 and not cell2:
@@ -475,7 +553,7 @@ class PdfCompare:
                         return True
         
         return similarity >= self.cell_match_threshold
-    
+
     def _extract_numeric_value(self, text):
         """Extract numeric value from text."""
         if not text:
@@ -489,7 +567,196 @@ class PdfCompare:
             except ValueError:
                 pass
         return None
+
+    def _table_to_text(self, table):
+        """Convert table to text representation for semantic matching."""
+        if not table.get("content"):
+            return ""
+        
+        # Join cells with spaces, rows with newlines
+        return "\n".join(" ".join(str(cell) for cell in row if cell) 
+                        for row in table["content"] if any(row))
+
+    @functools.lru_cache(maxsize=128)
+    def _get_table_embedding(self, table_content_str):
+        """Get and cache table embeddings."""
+        # If already in cache, return it
+        hash_key = hashlib.md5(table_content_str.encode()).hexdigest()
+        if hash_key in self.embedding_cache:
+            return self.embedding_cache[hash_key]
+            
+        # Otherwise, compute and cache
+        embedding = self.embedding_model.encode([table_content_str])[0]
+        self.embedding_cache[hash_key] = embedding
+        return embedding
     
+    def _compare_tables(self, table1: List[List[str]], table2: List[List[str]]) -> Tuple[float, int, str]:
+        """
+        Compare two tables and return similarity score, difference count, and HTML diff.
+        
+        Returns:
+            Tuple of (similarity_score, differences_count, diff_html)
+        """
+        if not table1 or not table2:
+            return 0.0, 0, ""
+        
+        # Create a cache key for this comparison
+        cache_key = (
+            hashlib.md5(str(table1).encode()).hexdigest(),
+            hashlib.md5(str(table2).encode()).hexdigest()
+        )
+        
+        # Check if we have this comparison in cache
+        if cache_key in self.table_comparison_cache:
+            return self.table_comparison_cache[cache_key]
+        
+        # Calculate overall similarity
+        str_a = "\n".join("∥".join(str(r) for r in row) for row in table1)
+        str_b = "\n".join("∥".join(str(r) for r in row) for row in table2)
+        similarity = SequenceMatcher(None, str_a, str_b).ratio()
+        
+        # If tables are very different, just mark them as such
+        if similarity < self.diff_threshold:
+            result = (similarity, max(len(table1), len(table2)), self._generate_diff_html(table1, table2))
+            self.table_comparison_cache[cache_key] = result
+            return result
+        
+        # Cell-by-cell comparison for detailed differences
+        differences = 0
+        diff_html = ""
+        
+        # Generate an HTML diff with cell-level highlighting
+        if similarity < 1.0:
+            diff_html = self._generate_diff_html(table1, table2)
+            
+            # Count differences (cells that don't match)
+            differences = self._count_cell_differences(table1, table2)
+        
+        result = (similarity, differences, diff_html)
+        self.table_comparison_cache[cache_key] = result
+        return result
+
+    def _count_cell_differences(self, table1: List[List[str]], table2: List[List[str]]) -> int:
+        """Count the number of differing cells between two tables."""
+        diff_count = 0
+        rows = max(len(table1), len(table2))
+        
+        for i in range(rows):
+            # Get rows or empty lists if row index exceeds table size
+            row1 = table1[i] if i < len(table1) else []
+            row2 = table2[i] if i < len(table2) else []
+            
+            # Compare cells in this row
+            cols = max(len(row1), len(row2))
+            for j in range(cols):
+                cell1 = row1[j] if j < len(row1) else ""
+                cell2 = row2[j] if j < len(row2) else ""
+                
+                # Normalize cell content for comparison
+                norm_cell1 = self._normalize_cell(cell1)
+                norm_cell2 = self._normalize_cell(cell2)
+                
+                # Check if cells differ
+                if norm_cell1 != norm_cell2:
+                    # Check for fuzzy match
+                    if not self._fuzzy_match_cells(norm_cell1, norm_cell2):
+                        diff_count += 1
+        
+        return diff_count
+
+    def _generate_diff_html(self, table1: List[List[str]], table2: List[List[str]]) -> str:
+        """Generate HTML showing differences between two tables."""
+        # Use side-by-side diff
+        return self._generate_side_by_side_diff(table1, table2)
+
+    def _generate_side_by_side_diff(self, table1: List[List[str]], table2: List[List[str]]) -> str:
+        """Generate side-by-side HTML diff of two tables."""
+        max_rows = max(len(table1), len(table2))
+        max_cols = max(
+            max((len(row) for row in table1), default=0),
+            max((len(row) for row in table2), default=0)
+        )
+        
+        html = ['<div class="table-diff-container">']
+        
+        # Table 1 (Left side)
+        html.append('<div class="table-diff-left">')
+        html.append(f'<table class="diff-table source1" cellspacing="0" cellpadding="3">')
+        html.append(self._generate_table_html(table1, table2, max_rows, max_cols, is_left=True))
+        html.append('</table>')
+        html.append('</div>')
+        
+        # Table 2 (Right side)
+        html.append('<div class="table-diff-right">')
+        html.append(f'<table class="diff-table source2" cellspacing="0" cellpadding="3">')
+        html.append(self._generate_table_html(table2, table1, max_rows, max_cols, is_left=False))
+        html.append('</table>')
+        html.append('</div>')
+        
+        html.append('</div>')
+        
+        return ''.join(html)
+
+    def _generate_table_html(self, source_table, compare_table, max_rows, max_cols, is_left):
+        """Generate HTML for a single table with proper cell highlighting."""
+        html = []
+        
+        # Column headers
+        html.append('<tr class="column-headers">')
+        html.append('<th class="row-index-header">#</th>')
+        for j in range(max_cols):
+            html.append(f'<th>Col {j+1}</th>')
+        html.append('</tr>')
+        
+        # Table rows
+        for i in range(max_rows):
+            row_class = "header-row" if i == 0 else ""
+            html.append(f'<tr class="{row_class}" data-row="{i}">')
+            html.append(f'<td class="row-index">{i+1}</td>')
+            
+            # Get row or empty list
+            row = source_table[i] if i < len(source_table) else []
+            compare_row = compare_table[i] if i < len(compare_table) else []
+            
+            # Fill cells
+            for j in range(max_cols):
+                cell = row[j] if j < len(row) else ""
+                compare_cell = compare_row[j] if j < len(compare_row) else ""
+                
+                cell_html = self._escape_html(str(cell))
+                cell_class = "empty" if not str(cell).strip() else ""
+                
+                # Determine cell status
+                if not str(cell).strip() and not str(compare_cell).strip():
+                    cell_class = ""  # Both empty
+                elif not str(cell).strip():
+                    cell_class = "empty"  # This cell is empty
+                elif not str(compare_cell).strip():
+                    cell_class = "inserted" if not is_left else "deleted"
+                elif self._normalize_cell(cell) == self._normalize_cell(compare_cell):
+                    cell_class = "similar"
+                elif self._fuzzy_match_cells(self._normalize_cell(cell), self._normalize_cell(compare_cell)):
+                    cell_class = "similar"
+                else:
+                    cell_class = "modified"
+                
+                html.append(f'<td class="{cell_class}" data-row="{i}" data-col="{j}">{cell_html}</td>')
+            
+            html.append('</tr>')
+        
+        return ''.join(html)
+
+    def _escape_html(self, text: str) -> str:
+        """Escape HTML special characters in text."""
+        if not text:
+            return ""
+            
+        return (str(text).replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&quot;")
+                .replace("'", "&#39;"))
+        
     def _build_table_diff(self, status, pg1, pg2, t1, t2, differences=0, similarity=0.0, diff_html=""):
         """Create a table difference record."""
         # For matched tables, we don't need to include the diff HTML
@@ -512,693 +779,114 @@ class PdfCompare:
             "diff_html": diff_html,
             "has_nested_tables": t1.get("has_nested_tables", False) if t1 else (t2.get("has_nested_tables", False) if t2 else False),
             "nested_tables": t1.get("nested_tables", []) if t1 else (t2.get("nested_tables", []) if t2 else [])
-        }
-    
-    # ─── text comparison ──────────────────────────────────────────
-    def _compare_text_elements(self, elems1: List[Dict], elems2: List[Dict]):
-        """Compare text elements between PDFs with enhanced accuracy."""
-        # Extract lines of text
-        lines1 = [e["content"] for e in elems1]
-        lines2 = [e["content"] for e in elems2]
+        }    
         
-        # Perform semantic alignment for text blocks to improve matching
-        if lines1 and lines2:
-            try:
-                # Group text into logical blocks for more accurate semantic comparison
-                blocks1 = self._group_text_into_blocks(lines1)
-                blocks2 = self._group_text_into_blocks(lines2)
-                
-                # Generate embeddings for blocks
-                block_embeddings1 = self.embedding_model.encode(blocks1)
-                block_embeddings2 = self.embedding_model.encode(blocks2)
-                
-                # Find block matches
-                block_matches = self._match_text_blocks(blocks1, blocks2, block_embeddings1, block_embeddings2)
-                
-                # Apply block matches to improve line matching
-                aligned_lines1, aligned_lines2 = self._align_text_based_on_blocks(lines1, lines2, blocks1, blocks2, block_matches)
-                
-                # Use aligned lines if successful
-                if aligned_lines1 and aligned_lines2:
-                    lines1, lines2 = aligned_lines1, aligned_lines2
-            except Exception as e:
-                logger.warning(f"Error in semantic text matching: {str(e)}")
+    def _format_table_as_deleted(self, table_content: List[List[str]]) -> str:
+        """Format a table that only exists in the first document."""
+        if not table_content:
+            return ""
+            
+        html = ['<div class="table-diff-container">']
+        html.append('<div class="table-diff-left" style="width:100%">') 
+        html.append('<table class="diff-table deleted" cellspacing="0" cellpadding="3">')
         
-        diff_results = []
+        max_cols = max((len(row) for row in table_content), default=0)
         
-        # Use SequenceMatcher for line-by-line comparison
-        sm = SequenceMatcher(None, lines1, lines2)
+        # Column headers
+        html.append('<tr class="column-headers">')
+        html.append('<th class="row-index-header">#</th>')
+        for j in range(max_cols):
+            html.append(f'<th>Col {j+1}</th>')
+        html.append('</tr>')
         
-        for tag, i1, i2, j1, j2 in sm.get_opcodes():
-            if tag == "equal":
-                # Lines match exactly
-                for k in range(i1, i2):
-                    diff_results.append(self._make_text_diff(
-                        "equal", k, j1 + k - i1,
-                        lines1[k], lines2[j1 + k - i1]
-                    ))
-            elif tag == "replace":
-                # Lines were changed - try to highlight specific differences
-                replaced_lines = max(i2 - i1, j2 - j1)
-                for k in range(replaced_lines):
-                    l1 = lines1[i1 + k] if i1 + k < i2 else ""
-                    l2 = lines2[j1 + k] if j1 + k < j2 else ""
+        # Table rows
+        for i, row in enumerate(table_content):
+            row_class = "header-row" if i == 0 else ""
+            html.append(f'<tr class="{row_class}" data-row="{i}">')
+            html.append(f'<td class="row-index">{i+1}</td>')
+            
+            # Fill cells
+            for j in range(max_cols):
+                cell = row[j] if j < len(row) else ""
+                cell_html = self._escape_html(str(cell))
+                cell_class = "deleted"  # All cells are deleted
                     
-                    # Check for fuzzy matches and semantic similarity
-                    if l1 and l2:
-                        seq_similarity = SequenceMatcher(None, l1, l2).ratio()
-                        
-                        if seq_similarity >= self.fuzzy_match_threshold:
-                            # Close enough for inline diff
-                            diff_html = self._generate_inline_text_diff(l1, l2)
-                            status = "modified"
-                        else:
-                            # Check for semantic similarity
-                            try:
-                                emb1 = self.embedding_model.encode([l1])[0]
-                                emb2 = self.embedding_model.encode([l2])[0]
-                                sem_similarity = np.dot(emb1, emb2)
-                                
-                                if sem_similarity >= self.semantic_similarity_threshold:
-                                    diff_html = f'<div class="inline-diff semantic"><div class="diff-old">{l1}</div><div class="diff-new">{l2}</div></div>'
-                                    status = "similar"
-                                else:
-                                    diff_html = ""
-                                    status = "changed"
-                            except Exception:
-                                diff_html = ""
-                                status = "changed"
-                    else:
-                        diff_html = ""
-                        status = "changed"
-                        
-                    diff_results.append(self._make_text_diff(
-                        status,
-                        i1 + k if l1 else None,
-                        j1 + k if l2 else None,
-                        l1, l2, diff_html
-                    ))
-            elif tag == "delete":
-                # Lines only in first document
-                for k in range(i1, i2):
-                    diff_results.append(self._make_text_diff(
-                        "deleted", k, None, lines1[k], ""
-                    ))
-            elif tag == "insert":
-                # Lines only in second document
-                for k in range(j1, j2):
-                    diff_results.append(self._make_text_diff(
-                        "inserted", None, k, "", lines2[k]
-                    ))
-                    
-        return diff_results
-    
-    def _group_text_into_blocks(self, lines: List[str]) -> List[str]:
-        """Group text lines into logical blocks for semantic comparison."""
-        blocks = []
-        current_block = []
+                html.append(f'<td class="{cell_class}" data-row="{i}" data-col="{j}">{cell_html}</td>')
+            
+            html.append('</tr>')
         
-        for line in lines:
-            # Check if this line could be part of current block
-            if not line.strip():
-                # Empty line - finish current block if it exists
-                if current_block:
-                    blocks.append(" ".join(current_block))
-                    current_block = []
+        html.append('</table>')
+        html.append('</div>')
+        html.append('</div>')
+        
+        return ''.join(html)
+
+    def _format_table_as_inserted(self, table_content: List[List[str]]) -> str:
+        """Format a table that only exists in the second document."""
+        if not table_content:
+            return ""
+            
+        html = ['<div class="table-diff-container">']
+        html.append('<div class="table-diff-right" style="width:100%">')
+        html.append('<table class="diff-table inserted" cellspacing="0" cellpadding="3">')
+        
+        max_cols = max((len(row) for row in table_content), default=0)
+        
+        # Column headers
+        html.append('<tr class="column-headers">')
+        html.append('<th class="row-index-header">#</th>')
+        for j in range(max_cols):
+            html.append(f'<th>Col {j+1}</th>')
+        html.append('</tr>')
+        
+        # Table rows
+        for i, row in enumerate(table_content):
+            row_class = "header-row" if i == 0 else ""
+            html.append(f'<tr class="{row_class}" data-row="{i}">')
+            html.append(f'<td class="row-index">{i+1}</td>')
+            
+            # Fill cells
+            for j in range(max_cols):
+                cell = row[j] if j < len(row) else ""
+                cell_html = self._escape_html(str(cell))
+                cell_class = "inserted"  # All cells are inserted
+                    
+                html.append(f'<td class="{cell_class}" data-row="{i}" data-col="{j}">{cell_html}</td>')
+            
+            html.append('</tr>')
+        
+        html.append('</table>')
+        html.append('</div>')
+        html.append('</div>')
+        
+        return ''.join(html)    
+    
+    def _add_nested_tables(self, parent_table, hierarchy, processed_tables):
+        """Recursively add nested tables to parent table."""
+        parent_id = parent_table.get("table_id1") or parent_table.get("table_id2")
+        if not parent_id or parent_id not in hierarchy:
+            return
+            
+        # Get children
+        children_ids = hierarchy[parent_id]["children"]
+        
+        # Process each child
+        for child_id in children_ids:
+            if child_id in processed_tables:
                 continue
                 
-            # Check if line ends with sentence-ending punctuation
-            ends_sentence = bool(re.search(r'[.!?]"?\s*$', line))
+            # Get child info
+            child_info = hierarchy[child_id]
+            child_table = child_info["table"]
             
-            # Add line to current block
-            current_block.append(line)
+            # Mark as processed
+            processed_tables.add(child_id)
             
-            # If line ends a sentence and block is getting long, finish block
-            if ends_sentence and len(" ".join(current_block)) > 50:
-                blocks.append(" ".join(current_block))
-                current_block = []
-        
-        # Add any remaining block
-        if current_block:
-            blocks.append(" ".join(current_block))
-            
-        return blocks
-    
-    def _match_text_blocks(self, blocks1, blocks2, embeddings1, embeddings2):
-        """Match text blocks using semantic similarity."""
-        matches = []
-        
-        # Compute similarity matrix
-        similarity_matrix = np.inner(embeddings1, embeddings2)
-        
-        # Find best matches above threshold
-        matched_j = set()
-        
-        for i in range(len(blocks1)):
-            best_j = -1
-            best_sim = self.semantic_similarity_threshold
-            
-            for j in range(len(blocks2)):
-                if j in matched_j:
-                    continue
+            # Add to parent's nested objects
+            if "nested_table_objects" not in parent_table:
+                parent_table["nested_table_objects"] = []
                 
-                sim = similarity_matrix[i, j]
-                if sim > best_sim:
-                    best_sim = sim
-                    best_j = j
+            parent_table["nested_table_objects"].append(child_table)
             
-            if best_j >= 0:
-                matches.append((i, best_j, float(similarity_matrix[i, best_j])))
-                matched_j.add(best_j)
-        
-        return matches
-    
-    def _align_text_based_on_blocks(self, lines1, lines2, blocks1, blocks2, block_matches):
-        """Align text lines based on block matches."""
-        # Map lines to their block index
-        line_to_block1 = {}
-        line_to_block2 = {}
-        block_to_lines1 = defaultdict(list)
-        block_to_lines2 = defaultdict(list)
-        
-        # Process first document
-        line_idx = 0
-        for block_idx, block in enumerate(blocks1):
-            block_line_count = len(block.split('\n')) + block.count('. ') + 1
-            block_line_count = max(1, min(block_line_count, 10))  # Sanity check
-            
-            for _ in range(block_line_count):
-                if line_idx < len(lines1):
-                    line_to_block1[line_idx] = block_idx
-                    block_to_lines1[block_idx].append(line_idx)
-                    line_idx += 1
-                    
-        # Process second document
-        line_idx = 0
-        for block_idx, block in enumerate(blocks2):
-            block_line_count = len(block.split('\n')) + block.count('. ') + 1
-            block_line_count = max(1, min(block_line_count, 10))  # Sanity check
-            
-            for _ in range(block_line_count):
-                if line_idx < len(lines2):
-                    line_to_block2[line_idx] = block_idx
-                    block_to_lines2[block_idx].append(line_idx)
-                    line_idx += 1
-        
-        # Create new line arrays with aligned content
-        aligned_lines1 = lines1.copy()
-        aligned_lines2 = lines2.copy()
-        
-        # Cannot reliably align without block matches
-        if not block_matches:
-            return aligned_lines1, aligned_lines2
-        
-        # Use block matches to create an alignment mapping
-        block_alignment = {}
-        for i, j, sim in block_matches:
-            block_alignment[i] = j
-            
-        # Create a line alignment based on block matches
-        line_alignment = {}
-        for line1_idx, block1_idx in line_to_block1.items():
-            if block1_idx in block_alignment:
-                block2_idx = block_alignment[block1_idx]
-                lines2_in_block = block_to_lines2[block2_idx]
-                
-                # Pick corresponding line in block2
-                if lines2_in_block:
-                    rel_pos = line1_idx / max(1, len(block_to_lines1[block1_idx]))
-                    line2_idx = lines2_in_block[min(int(rel_pos * len(lines2_in_block)), len(lines2_in_block) - 1)]
-                    line_alignment[line1_idx] = line2_idx
-        
-        return aligned_lines1, aligned_lines2
-    
-    def _make_text_diff(self, status, n1, n2, t1, t2, diff_html=""):
-        """Create a text difference record."""
-        return {
-            "status": status, 
-            "line_num1": n1, 
-            "line_num2": n2,
-            "text1": t1, 
-            "text2": t2, 
-            "diff_html": diff_html
-        }
-    
-    def _generate_inline_text_diff(self, text1: str, text2: str) -> str:
-        """Generate HTML with inline highlighting of text differences."""
-        # Split into words for more accurate diff
-        words1 = text1.split()
-        words2 = text2.split()
-        
-        # Use SequenceMatcher for word-by-word comparison
-        sm = SequenceMatcher(None, words1, words2)
-        
-        result1 = []
-        result2 = []
-        
-        for tag, i1, i2, j1, j2 in sm.get_opcodes():
-            if tag == 'equal':
-                # Words match
-                segment = ' '.join(words1[i1:i2])
-                result1.append(segment)
-                result2.append(segment)
-            elif tag == 'replace':
-                # Words changed
-                result1.append(f'<span class="diff-deleted">{" ".join(words1[i1:i2])}</span>')
-                result2.append(f'<span class="diff-inserted">{" ".join(words2[j1:j2])}</span>')
-            elif tag == 'delete':
-                # Words only in first text
-                result1.append(f'<span class="diff-deleted">{" ".join(words1[i1:i2])}</span>')
-            elif tag == 'insert':
-                # Words only in second text
-                result2.append(f'<span class="diff-inserted">{" ".join(words2[j1:j2])}</span>')
-        
-        # Combine results into two-column format
-        return f'<div class="inline-diff"><div class="diff-old">{" ".join(result1)}</div>' + \
-               f'<div class="diff-new">{" ".join(result2)}</div></div>'
-    
-    # ─── HTML diff generation ─────────────────────────────────────
-    def _generate_diff_html(self, table1: List[List[str]], table2: List[List[str]]) -> str:
-        """
-        Generate enhanced HTML showing differences between two tables with 
-        column-level highlighting and improved status indication.
-        """
-        max_rows = max(len(table1), len(table2))
-        max_cols = max(
-            max((len(row) for row in table1), default=0),
-            max((len(row) for row in table2), default=0)
-        )
-        
-        # Create enhanced side-by-side table diff
-        html = ['<div class="table-diff-container">']
-        
-        # Table 1 (Left side)
-        html.append('<div class="table-diff-left">')
-        html.append(f'<table class="diff-table source1" cellspacing="0" cellpadding="3">')
-        
-        # Column headers
-        html.append('<tr class="column-headers">')
-        html.append('<th class="row-index-header">#</th>')  # Row index header
-        for j in range(max_cols):
-            html.append(f'<th>Col {j+1}</th>')
-        html.append('</tr>')
-        
-        # Table rows
-        for i in range(max_rows):
-            row_class = "header-row" if i == 0 else ""
-            html.append(f'<tr class="{row_class}" data-row="{i}">')
-            html.append(f'<td class="row-index">{i+1}</td>')  # Row index
-            
-            # Get row or empty list
-            row = table1[i] if i < len(table1) else []
-            
-            # Fill cells
-            for j in range(max_cols):
-                cell = row[j] if j < len(row) else ""
-                cell_html = self._escape_html(cell)
-                
-                # Check if this cell exists in table2
-                cell_class = "empty" if not cell.strip() else ""
-                cell_status = self._get_cell_status(i, j, table1, table2)
-                
-                if cell_status:
-                    cell_class += f" {cell_status}"
-                    
-                html.append(f'<td class="{cell_class}" data-row="{i}" data-col="{j}">{cell_html}</td>')
-            
-            html.append('</tr>')
-        
-        html.append('</table>')
-        html.append('</div>')
-        
-        # Table 2 (Right side)
-        html.append('<div class="table-diff-right">')
-        html.append(f'<table class="diff-table source2" cellspacing="0" cellpadding="3">')
-        
-        # Column headers
-        html.append('<tr class="column-headers">')
-        html.append('<th class="row-index-header">#</th>')  # Row index header
-        for j in range(max_cols):
-            html.append(f'<th>Col {j+1}</th>')
-        html.append('</tr>')
-        
-        # Table rows
-        for i in range(max_rows):
-            row_class = "header-row" if i == 0 else ""
-            html.append(f'<tr class="{row_class}" data-row="{i}">')
-            html.append(f'<td class="row-index">{i+1}</td>')  # Row index
-            
-            # Get row or empty list
-            row = table2[i] if i < len(table2) else []
-            
-            # Fill cells
-            for j in range(max_cols):
-                cell = row[j] if j < len(row) else ""
-                cell_html = self._escape_html(cell)
-                
-                # Check if this cell exists in table1
-                cell_class = "empty" if not cell.strip() else ""
-                cell_status = self._get_cell_status(i, j, table2, table1, reverse=True)
-                
-                if cell_status:
-                    cell_class += f" {cell_status}"
-                    
-                html.append(f'<td class="{cell_class}" data-row="{i}" data-col="{j}">{cell_html}</td>')
-            
-            html.append('</tr>')
-        
-        html.append('</table>')
-        html.append('</div>')
-        
-        html.append('</div>')
-        
-        return ''.join(html)
-        
-        # Table 1 (Left side)
-        html.append('<div class="table-diff-left">')
-        html.append(f'<table class="diff-table source1" cellspacing="0" cellpadding="3">')
-        
-        # Column headers
-        html.append('<tr class="column-headers">')
-        html.append('<th class="row-index-header">#</th>')  # Row index header
-        for j in range(max_cols):
-            html.append(f'<th>Col {j+1}</th>')
-        html.append('</tr>')
-        
-        # Table rows
-        for i in range(max_rows):
-            row_class = "header-row" if i == 0 else ""
-            html.append(f'<tr class="{row_class}" data-row="{i}">')
-            html.append(f'<td class="row-index">{i+1}</td>')  # Row index
-            
-            # Get row or empty list
-            row = table1[i] if i < len(table1) else []
-            
-            # Fill cells
-            for j in range(max_cols):
-                cell = row[j] if j < len(row) else ""
-                cell_html = self._escape_html(cell)
-                
-                # Check if this cell exists in table2
-                cell_class = "empty" if not cell.strip() else ""
-                cell_status = self._get_cell_status(i, j, table1, table2)
-                
-                if cell_status:
-                    cell_class += f" {cell_status}"
-                    
-                html.append(f'<td class="{cell_class}" data-row="{i}" data-col="{j}">{cell_html}</td>')
-            
-            html.append('</tr>')
-        
-        html.append('</table>')
-        html.append('</div>')
-        
-        # Table 2 (Right side)
-        html.append('<div class="table-diff-right">')
-        html.append(f'<table class="diff-table source2" cellspacing="0" cellpadding="3">')
-        
-        # Column headers
-        html.append('<tr class="column-headers">')
-        html.append('<th class="row-index-header">#</th>')  # Row index header
-        for j in range(max_cols):
-            html.append(f'<th>Col {j+1}</th>')
-        html.append('</tr>')
-        
-        # Table rows
-        for i in range(max_rows):
-            row_class = "header-row" if i == 0 else ""
-            html.append(f'<tr class="{row_class}" data-row="{i}">')
-            html.append(f'<td class="row-index">{i+1}</td>')  # Row index
-            
-            # Get row or empty list
-            row = table2[i] if i < len(table2) else []
-            
-            # Fill cells
-            for j in range(max_cols):
-                cell = row[j] if j < len(row) else ""
-                cell_html = self._escape_html(cell)
-                
-                # Check if this cell exists in table1
-                cell_class = "empty" if not cell.strip() else ""
-                cell_status = self._get_cell_status(i, j, table2, table1, reverse=True)
-                
-                if cell_status:
-                    cell_class += f" {cell_status}"
-                    
-                html.append(f'<td class="{cell_class}" data-row="{i}" data-col="{j}">{cell_html}</td>')
-            
-            html.append('</tr>')
-        
-        html.append('</table>')
-        html.append('</div>')
-        
-        html.append('</div>')
-        
-        return ''.join(html)
-    
-    def _get_cell_status(self, row, col, table1, table2, reverse=False):
-        """
-        Determine the status of a cell for HTML diff.
-        
-        Args:
-            row: Row index
-            col: Column index
-            table1: Source table
-            table2: Target table
-            reverse: If True, consider table2->table1 instead of table1->table2
-            
-        Returns:
-            Status class name or None
-        """
-        # Check if the cell exists in both tables
-        cell1 = table1[row][col] if row < len(table1) and col < len(table1[row]) else ""
-        cell2 = table2[row][col] if row < len(table2) and col < len(table2[row]) else ""
-        
-        cell1 = self._normalize_cell(cell1)
-        cell2 = self._normalize_cell(cell2)
-        
-        # Empty cells don't need status
-        if not cell1 and not cell2:
-            return None
-            
-        # Cell only in table1
-        if cell1 and not cell2:
-            return "deleted" if not reverse else "inserted"
-            
-        # Cell only in table2
-        if not cell1 and cell2:
-            return "inserted" if not reverse else "deleted"
-            
-        # Both cells have content
-        if cell1 == cell2:
-            return "similar"  # Exact match
-            
-        # Check for fuzzy match
-        if self._fuzzy_match_cells(cell1, cell2):
-            return "similar"  # Similar content
-            
-        # Different content
-        return "modified" 
-    
-    def _format_table_as_deleted(self, table_content: List[List[str]]) -> str:
-        """Format a table that only exists in the first document."""
-        if not table_content:
-            return ""
-            
-        html = ['<div class="table-diff-container">']
-        html.append('<div class="table-diff-left" style="width:100%">') 
-        html.append('<table class="diff-table deleted" cellspacing="0" cellpadding="3">')
-        
-        # Column headers
-        html.append('<tr class="column-headers">')
-        html.append('<th class="row-index-header">#</th>')  # Row index header
-        for j in range(len(table_content[0])):
-            html.append(f'<th>Col {j+1}</th>')
-        html.append('</tr>')
-        
-        # Table rows
-        for i, row in enumerate(table_content):
-            row_class = "header-row" if i == 0 else ""
-            html.append(f'<tr class="{row_class}" data-row="{i}">')
-            html.append(f'<td class="row-index">{i+1}</td>')  # Row index
-            
-            # Fill cells
-            for j, cell in enumerate(row):
-                cell_html = self._escape_html(cell)
-                cell_class = "deleted"  # All cells are deleted
-                    
-                html.append(f'<td class="{cell_class}" data-row="{i}" data-col="{j}">{cell_html}</td>')
-            
-            html.append('</tr>')
-        
-        html.append('</table>')
-        html.append('</div>')
-        html.append('</div>')
-        
-        return ''.join(html)
-    
-    def _format_table_as_inserted(self, table_content: List[List[str]]) -> str:
-        """Format a table that only exists in the second document."""
-        if not table_content:
-            return ""
-            
-        html = ['<div class="table-diff-container">']
-        html.append('<div class="table-diff-right" style="width:100%">')
-        html.append('<table class="diff-table inserted" cellspacing="0" cellpadding="3">')
-        
-        # Column headers
-        html.append('<tr class="column-headers">')
-        html.append('<th class="row-index-header">#</th>')  # Row index header
-        for j in range(len(table_content[0])):
-            html.append(f'<th>Col {j+1}</th>')
-        html.append('</tr>')
-        
-        # Table rows
-        for i, row in enumerate(table_content):
-            row_class = "header-row" if i == 0 else ""
-            html.append(f'<tr class="{row_class}" data-row="{i}">')
-            html.append(f'<td class="row-index">{i+1}</td>')  # Row index
-            
-            # Fill cells
-            for j, cell in enumerate(row):
-                cell_html = self._escape_html(cell)
-                cell_class = "inserted"  # All cells are inserted
-                    
-                html.append(f'<td class="{cell_class}" data-row="{i}" data-col="{j}">{cell_html}</td>')
-            
-            html.append('</tr>')
-        
-        html.append('</table>')
-        html.append('</div>')
-        html.append('</div>')
-        
-        return ''.join(html)
-    
-    def _escape_html(self, text: str) -> str:
-        """Escape HTML special characters in text."""
-        if not text:
-            return ""
-            
-        return (text.replace("&", "&amp;")
-                   .replace("<", "&lt;")
-                   .replace(">", "&gt;")
-                   .replace('"', "&quot;")
-                   .replace("'", "&#39;"))
-                   
-    def _format_table_as_deleted(self, table_content: List[List[str]]) -> str:
-        """Format a table that only exists in the first document."""
-        if not table_content:
-            return ""
-            
-        html = ['<div class="table-diff-container">']
-        html.append('<div class="table-diff-left" style="width:100%">') 
-        html.append('<table class="diff-table deleted" cellspacing="0" cellpadding="3">')
-        
-        # Column headers
-        html.append('<tr class="column-headers">')
-        html.append('<th class="row-index-header">#</th>')  # Row index header
-        for j in range(len(table_content[0]) if table_content and table_content[0] else 0):
-            html.append(f'<th>Col {j+1}</th>')
-        html.append('</tr>')
-        
-        # Table rows
-        for i, row in enumerate(table_content):
-            row_class = "header-row" if i == 0 else ""
-            html.append(f'<tr class="{row_class}" data-row="{i}">')
-            html.append(f'<td class="row-index">{i+1}</td>')  # Row index
-            
-            # Fill cells
-            for j, cell in enumerate(row):
-                cell_html = self._escape_html(cell)
-                cell_class = "deleted"  # All cells are deleted
-                    
-                html.append(f'<td class="{cell_class}" data-row="{i}" data-col="{j}">{cell_html}</td>')
-            
-            html.append('</tr>')
-        
-        html.append('</table>')
-        html.append('</div>')
-        html.append('</div>')
-        
-        return ''.join(html)
-    
-    def _format_table_as_inserted(self, table_content: List[List[str]]) -> str:
-        """Format a table that only exists in the second document."""
-        if not table_content:
-            return ""
-            
-        html = ['<div class="table-diff-container">']
-        html.append('<div class="table-diff-right" style="width:100%">')
-        html.append('<table class="diff-table inserted" cellspacing="0" cellpadding="3">')
-        
-        # Column headers
-        html.append('<tr class="column-headers">')
-        html.append('<th class="row-index-header">#</th>')  # Row index header
-        for j in range(len(table_content[0]) if table_content and table_content[0] else 0):
-            html.append(f'<th>Col {j+1}</th>')
-        html.append('</tr>')
-        
-        # Table rows
-        for i, row in enumerate(table_content):
-            row_class = "header-row" if i == 0 else ""
-            html.append(f'<tr class="{row_class}" data-row="{i}">')
-            html.append(f'<td class="row-index">{i+1}</td>')  # Row index
-            
-            # Fill cells
-            for j, cell in enumerate(row):
-                cell_html = self._escape_html(cell)
-                cell_class = "inserted"  # All cells are inserted
-                    
-                html.append(f'<td class="{cell_class}" data-row="{i}" data-col="{j}">{cell_html}</td>')
-            
-            html.append('</tr>')
-        
-        html.append('</table>')
-        html.append('</div>')
-        html.append('</div>')
-        
-        return ''.join(html)
-        
-    def _get_cell_status(self, row, col, table1, table2, reverse=False):
-        """
-        Determine the status of a cell for HTML diff.
-        
-        Args:
-            row: Row index
-            col: Column index
-            table1: Source table
-            table2: Target table
-            reverse: If True, consider table2->table1 instead of table1->table2
-            
-        Returns:
-            Status class name or None
-        """
-        # Check if the cell exists in both tables
-        cell1 = table1[row][col] if row < len(table1) and col < len(table1[row]) else ""
-        cell2 = table2[row][col] if row < len(table2) and col < len(table2[row]) else ""
-        
-        cell1 = self._normalize_cell(cell1)
-        cell2 = self._normalize_cell(cell2)
-        
-        # Empty cells don't need status
-        if not cell1 and not cell2:
-            return None
-            
-        # Cell only in table1
-        if cell1 and not cell2:
-            return "deleted" if not reverse else "inserted"
-            
-        # Cell only in table2
-        if not cell1 and cell2:
-            return "inserted" if not reverse else "deleted"
-            
-        # Both cells have content
-        if cell1 == cell2:
-            return "similar"  # Exact match
-            
-        # Check for fuzzy match
-        if self._fuzzy_match_cells(cell1, cell2):
-            return "similar"  # Similar content
-            
-        # Different content
-        return "modified"
+            # Process this child's children
+            self._add_nested_tables(child_table, hierarchy, processed_tables)
