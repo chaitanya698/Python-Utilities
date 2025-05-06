@@ -434,10 +434,10 @@ class PDFExtractor:
         return header_similarity >= self.header_match_threshold or has_continuation_indicator
     
     def _calculate_header_similarity(self, header1, header2):
-        """Calculate similarity between two table headers."""
+        """Calculate similarity between two table headers using simple string matching."""
         if not header1 or not header2:
             return 0.0
-            
+        
         # Simple similarity: percentage of matching cell values
         matches = 0
         total = max(len(header1), len(header2))
@@ -451,5 +451,34 @@ class PDFExtractor:
                 matches += 1
             elif cell1 in cell2 or cell2 in cell1:
                 matches += 0.7  # Partial match
+            # Add Levenshtein distance for fuzzy matching
+            elif self._levenshtein_similarity(cell1, cell2) > 0.7:
+                matches += 0.5  # Fuzzy match
         
         return matches / total if total > 0 else 0.0
+
+    def _levenshtein_similarity(self, s1, s2):
+        """Calculate similarity based on Levenshtein distance."""
+        # Calculate Levenshtein distance
+        if len(s1) < len(s2):
+            return self._levenshtein_similarity(s2, s1)
+        
+        if len(s2) == 0:
+            return 0.0
+        
+        previous_row = range(len(s2) + 1)
+        for i, c1 in enumerate(s1):
+            current_row = [i + 1]
+            for j, c2 in enumerate(s2):
+                insertions = previous_row[j + 1] + 1
+                deletions = current_row[j] + 1
+                substitutions = previous_row[j] + (c1 != c2)
+                current_row.append(min(insertions, deletions, substitutions))
+            previous_row = current_row
+        
+        # Convert distance to similarity (0 to 1)
+        max_len = max(len(s1), len(s2))
+        distance = previous_row[-1]
+        similarity = 1 - (distance / max_len) if max_len > 0 else 0
+        
+        return similarity
