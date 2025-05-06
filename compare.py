@@ -1,3 +1,15 @@
+"""
+compare.py
+----------
+Enhanced diff engine for text & table comparison with more reliable difference detection.
+
+Key improvements:
+* Fixed content-based matching regardless of page position
+* Fixed cross-page table matching with content similarity
+* Improved report generation to avoid duplicates
+* Enhanced visual representation with clear color coding for differences
+* Fixed text block similarity comparison for proper difference detection
+"""
 
 import logging
 import re
@@ -9,9 +21,6 @@ from difflib import SequenceMatcher, get_close_matches
 from typing import Dict, List, Tuple, Any, Optional, Set, Union
 from collections import defaultdict
 
-import numpy as np
-from sentence_transformers import SentenceTransformer
-
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
@@ -21,22 +30,16 @@ class PdfCompare:
                  diff_threshold: float = 0.75,
                  cell_match_threshold: float = 0.9,
                  fuzzy_match_threshold: float = 0.8,
-                 semantic_similarity_threshold: float = 0.85,
                  max_workers: int = 4):
         self.diff_threshold = diff_threshold        # Table similarity threshold
         self.cell_match_threshold = cell_match_threshold  # Cell content similarity threshold  
         self.fuzzy_match_threshold = fuzzy_match_threshold  # Fuzzy text matching threshold
-        self.semantic_similarity_threshold = semantic_similarity_threshold  # Semantic matching threshold
-        
-        # Initialize embedding model for semantic similarity
-        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
         
         # Configure parallelization
         self.max_workers = max_workers
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
         
         # Initialize caches
-        self.embedding_cache = {}
         self.table_comparison_cache = {}
 
     # ─── public ───────────────────────────────────────────────────
@@ -236,7 +239,7 @@ class PdfCompare:
         
         This enhanced algorithm:
         1. Uses content hashes for exact matches
-        2. Uses semantic similarity for similar content
+        2. Uses content similarity for similar content
         3. Properly handles multi-page tables
         4. Avoids duplicate reporting
         """
@@ -273,11 +276,11 @@ class PdfCompare:
         remaining2 = [(pg, t) for pg, t in tables2 
                      if (pg, t["table_id"]) not in matched_tables2]
         
-        # Step 3: Compute semantic embeddings for all remaining tables
-        semantic_matches = self._match_tables_by_similarity(remaining1, remaining2)
+        # Step 3: Match remaining tables by content similarity
+        similarity_matches = self._match_tables_by_similarity(remaining1, remaining2)
         
-        # Process semantic matches
-        for (pg1, t1), (pg2, t2), similarity in semantic_matches:
+        # Process similarity matches
+        for (pg1, t1), (pg2, t2), similarity in similarity_matches:
             status = "moved" if pg1 != pg2 else "modified"
             
             # Get detailed differences
@@ -294,14 +297,14 @@ class PdfCompare:
         # Add remaining unmatched tables
         for pg1, t1 in remaining1:
             if not any((pg1, t1) == match[0] for match in content_matches) and \
-               not any((pg1, t1) == match[0] for match in semantic_matches):
+               not any((pg1, t1) == match[0] for match in similarity_matches):
                 results.append(self._build_table_diff("deleted", pg1, None, t1, None))
                 
         for pg2, t2 in remaining2:
             if (pg2, t2["table_id"]) not in matched_tables2:
                 results.append(self._build_table_diff("inserted", None, pg2, None, t2))
         
-        logger.info(f"Matched tables: {len(content_matches) + len(semantic_matches)}")
+        logger.info(f"Matched tables: {len(content_matches) + len(similarity_matches)}")
         return results
     
     def _organize_table_matches_by_page(self, table_matches):
@@ -397,7 +400,7 @@ class PdfCompare:
         # Process matches in order of decreasing similarity
         for sim, i, j in all_similarities:
             # Only consider sufficiently similar tables
-            if sim < self.semantic_similarity_threshold:
+            if sim < self.diff_threshold:
                 continue
                 
             # Skip if either table is already matched
@@ -421,7 +424,6 @@ class PdfCompare:
         Calculate overall similarity between two tables using multiple metrics:
         1. Content similarity
         2. Structure similarity
-        3. Semantic similarity
         """
         # 1. Check if tables have content
         if not t1.get("content") or not t2.get("content"):
@@ -450,31 +452,11 @@ class PdfCompare:
         # 4. Cell content similarity
         cell_similarity = self._calculate_cell_content_similarity(content1, content2)
         
-        # 5. Semantic similarity - compare table meaning
-        semantic_similarity = 0.5  # Default value
-        table1_text = self._table_to_text(t1)
-        table2_text = self._table_to_text(t2)
-        
-        if table1_text and table2_text:
-            try:
-                # Generate embeddings
-                emb1 = self._get_table_embedding(table1_text)
-                emb2 = self._get_table_embedding(table2_text)
-                
-                # Calculate cosine similarity
-                semantic_similarity = np.dot(emb1, emb2)
-                
-                # Normalize to 0-1 range
-                semantic_similarity = max(0.0, min(1.0, semantic_similarity))
-            except Exception as e:
-                logger.warning(f"Error calculating semantic similarity: {str(e)}")
-        
         # Combine similarities with weights
         combined_similarity = (
-            cell_similarity * 0.6 +       # Cell content is most important
-            row_ratio * 0.1 +             # Row structure matters somewhat
-            col_ratio * 0.1 +             # Column structure matters somewhat
-            semantic_similarity * 0.2     # Overall meaning matters
+            cell_similarity * 0.7 +       # Cell content is most important
+            row_ratio * 0.15 +            # Row structure matters somewhat
+            col_ratio * 0.15              # Column structure matters somewhat
         )
         
         return combined_similarity
@@ -568,28 +550,6 @@ class PdfCompare:
                 pass
         return None
 
-    def _table_to_text(self, table):
-        """Convert table to text representation for semantic matching."""
-        if not table.get("content"):
-            return ""
-        
-        # Join cells with spaces, rows with newlines
-        return "\n".join(" ".join(str(cell) for cell in row if cell) 
-                        for row in table["content"] if any(row))
-
-    @functools.lru_cache(maxsize=128)
-    def _get_table_embedding(self, table_content_str):
-        """Get and cache table embeddings."""
-        # If already in cache, return it
-        hash_key = hashlib.md5(table_content_str.encode()).hexdigest()
-        if hash_key in self.embedding_cache:
-            return self.embedding_cache[hash_key]
-            
-        # Otherwise, compute and cache
-        embedding = self.embedding_model.encode([table_content_str])[0]
-        self.embedding_cache[hash_key] = embedding
-        return embedding
-    
     def _compare_tables(self, table1: List[List[str]], table2: List[List[str]]) -> Tuple[float, int, str]:
         """
         Compare two tables and return similarity score, difference count, and HTML diff.
@@ -859,34 +819,4 @@ class PdfCompare:
         html.append('</div>')
         html.append('</div>')
         
-        return ''.join(html)    
-    
-    def _add_nested_tables(self, parent_table, hierarchy, processed_tables):
-        """Recursively add nested tables to parent table."""
-        parent_id = parent_table.get("table_id1") or parent_table.get("table_id2")
-        if not parent_id or parent_id not in hierarchy:
-            return
-            
-        # Get children
-        children_ids = hierarchy[parent_id]["children"]
-        
-        # Process each child
-        for child_id in children_ids:
-            if child_id in processed_tables:
-                continue
-                
-            # Get child info
-            child_info = hierarchy[child_id]
-            child_table = child_info["table"]
-            
-            # Mark as processed
-            processed_tables.add(child_id)
-            
-            # Add to parent's nested objects
-            if "nested_table_objects" not in parent_table:
-                parent_table["nested_table_objects"] = []
-                
-            parent_table["nested_table_objects"].append(child_table)
-            
-            # Process this child's children
-            self._add_nested_tables(child_table, hierarchy, processed_tables)
+        return ''.join(html)

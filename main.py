@@ -1,4 +1,9 @@
-
+"""
+main.py - Enhanced PDF Comparison Tool
+--------------------------------------
+Integrates the improved modules for table detection and comparison with
+parallel processing and progress tracking
+"""
 import os
 import io
 import logging
@@ -32,7 +37,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = os.path.join(os.getcwd(), 'uploads')
 app.config['REPORT_FOLDER'] = os.path.join(os.getcwd(), 'reports')
-app.config['MAX_CONTENT_LENGTH'] = 64 * 1024 * 1024  # 64MB max upload size (increased from 32MB)
+app.config['MAX_CONTENT_LENGTH'] = 64 * 1024 * 1024  # 64MB max upload size
 app.config['ALLOWED_EXTENSIONS'] = {'pdf'}
 
 # In-memory store for task tracking
@@ -153,11 +158,10 @@ def process_comparison_with_progress(task_id, filepath1, filepath2, filename1, f
         
         # Extract content from PDFs with enhanced table detection
         extractor = PDFExtractor(
-        similarity_threshold=0.85,  # Threshold for table content similarity
-        header_match_threshold=0.9,  # Threshold for header matching
-        nested_table_threshold=0.85,  # Containment threshold for nested tables
-        nested_area_ratio=0.75,      # Size ratio for nested tables
-        semantic_similarity_threshold=0.80  # Threshold for semantic matching
+            similarity_threshold=0.85,  # Threshold for table content similarity
+            header_match_threshold=0.9,  # Threshold for header matching
+            nested_table_threshold=0.85,  # Containment threshold for nested tables
+            nested_area_ratio=0.75      # Size ratio for nested tables
         )
         logger.info(f"Extracting content from {filename1}")
         pdf1_data = extractor.extract_pdf_content(pdf1_content)
@@ -179,7 +183,6 @@ def process_comparison_with_progress(task_id, filepath1, filepath2, filename1, f
             diff_threshold=0.75,             # Threshold for table similarity
             cell_match_threshold=0.9,        # Threshold for cell content matching
             fuzzy_match_threshold=0.8,       # Threshold for fuzzy text matching
-            semantic_similarity_threshold=0.85,  # Threshold for semantic matching
             max_workers=4                    # Parallel processing threads
         )
         comparison_results = comparer.compare_pdfs(pdf1_data, pdf2_data)
@@ -452,59 +455,6 @@ def get_async_result(task_id):
             'progress': task['progress'],
             'message': task.get('status_message', 'Processing...')
         })
-
-
-@app.route('/api/report-data/<filename>')
-def get_report_data(filename):
-    """
-    API endpoint to get the raw JSON data behind a report.
-    Useful for external tools or custom visualizations.
-    """
-    try:
-        # Parse the report HTML to extract the JSON data
-        report_path = os.path.join(app.config['REPORT_FOLDER'], filename)
-        
-        if not os.path.exists(report_path):
-            return jsonify({
-                'status': 'error',
-                'message': 'Report not found'
-            }), 404
-            
-        # Extract raw data based on filename pattern
-        parts = filename.split('_vs_')
-        if len(parts) < 2:
-            return jsonify({
-                'status': 'error',
-                'message': 'Invalid report filename format'
-            }), 400
-            
-        pdf1_name = parts[0]
-        # Second part contains pdf2_name and timestamp
-        pdf2_timestamp = parts[1].split('_')
-        pdf2_name = '_'.join(pdf2_timestamp[:-2]) if len(pdf2_timestamp) > 2 else pdf2_timestamp[0]
-        
-        # Find the corresponding task that generated this report
-        for task_id, task in processing_tasks.items():
-            if task.get('status') == 'completed' and task.get('result'):
-                if task['orig_filename1'] in pdf1_name and task['orig_filename2'] in pdf2_name:
-                    # Return the raw result data
-                    return jsonify({
-                        'status': 'success',
-                        'data': task['result']
-                    })
-        
-        # If no matching task found, return error
-        return jsonify({
-            'status': 'error',
-            'message': 'Report data not found'
-        }), 404
-            
-    except Exception as e:
-        logger.error(f"Error retrieving report data: {str(e)}", exc_info=True)
-        return jsonify({
-            'status': 'error',
-            'message': f'An error occurred: {str(e)}'
-        }), 500
 
 
 @app.errorhandler(413)

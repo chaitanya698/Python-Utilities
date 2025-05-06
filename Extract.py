@@ -1,13 +1,13 @@
 """
-Extract.py 
+extract.py
 ----------
-Enhanced PDF structure-preserving extractor with rule-based table detection.
+Deterministic PDF content extraction with advanced table detection.
 
 Key improvements:
-* Better detection of tables with missing borders using geometric analysis
-* Enhanced multi-page table merging with rule-based continuation detection
+* Better detection of tables with missing borders using positional analysis
+* Enhanced multi-page table merging with continuation header detection
 * Improved text extraction under missing borders
-* Better merging of continuation tables using string similarity
+* Better merging of continuation tables
 """
 
 import io
@@ -16,10 +16,14 @@ import uuid
 import re
 import hashlib
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any, Set
 from collections import defaultdict
+import math
+
+# PDF processing libraries
 from pdfminer.high_level import extract_pages
-from pdfminer.layout import LAParams, LTTextContainer, LTTextBox, LTTextLine, LTPage, LTRect, LTLine
+from pdfminer.layout import LAParams, LTTextContainer, LTTextBox, LTTextLine, LTPage
+from pdfminer.layout import LTRect, LTLine
 import pdfminer.high_level
 
 # Configure logging
@@ -39,7 +43,7 @@ class TableData:
     is_continuation: bool = False
     continuation_of: Optional[str] = None
 
-    def has_continuation_indicators(self):
+    def has_continuation_indicators(self) -> bool:
         """Check if table has indicators suggesting it continues on next page."""
         if not self.content or len(self.content) == 0:
             return False
@@ -50,11 +54,12 @@ class TableData:
             return False
             
         last_row_text = " ".join(cell.lower() for cell in last_row if cell)
-        continuation_phrases = ["continued", "cont'd", "(continued)", "continues", "to be continued"]
+        continuation_phrases = ["continued", "cont'd", "(continued)", "continues", 
+                               "to be continued", "(cont)", "(contd)"]
         
         return any(phrase in last_row_text for phrase in continuation_phrases)
     
-    def get_header_signature(self):
+    def get_header_signature(self) -> str:
         """Get a signature of the header row for matching continuation tables."""
         if not self.content or len(self.content) < 1:
             return ""
@@ -66,26 +71,29 @@ class TableData:
 
 class PDFExtractor:
     """
-    Enhanced PDF extractor with rule-based table detection and extraction.
-    This class handles the extraction of content from PDF files.
+    Enhanced PDF extractor with improved table detection and extraction.
+    Uses deterministic methods for content extraction with no ML.
     """
     
-    def __init__(self, similarity_threshold=0.85, header_match_threshold=0.9, 
-                 grid_detection_threshold=0.7, line_proximity_threshold=5.0):
+    def __init__(self, 
+                similarity_threshold: float = 0.85, 
+                header_match_threshold: float = 0.9, 
+                nested_table_threshold: float = 0.85, 
+                nested_area_ratio: float = 0.75):
         """Initialize the PDF extractor with customizable thresholds."""
         self.similarity_threshold = similarity_threshold
         self.header_match_threshold = header_match_threshold
-        self.grid_detection_threshold = grid_detection_threshold
-        self.line_proximity_threshold = line_proximity_threshold
+        self.nested_table_threshold = nested_table_threshold
+        self.nested_area_ratio = nested_area_ratio
         self.continuation_tables = []
         
         logger.info("PDFExtractor initialized with the following thresholds:")
         logger.info(f"  similarity_threshold: {similarity_threshold}")
         logger.info(f"  header_match_threshold: {header_match_threshold}")
-        logger.info(f"  grid_detection_threshold: {grid_detection_threshold}")
-        logger.info(f"  line_proximity_threshold: {line_proximity_threshold}")
+        logger.info(f"  nested_table_threshold: {nested_table_threshold}")
+        logger.info(f"  nested_area_ratio: {nested_area_ratio}")
     
-    def extract_pdf_content(self, pdf_content):
+    def extract_pdf_content(self, pdf_content: bytes) -> Dict:
         """
         Extract structured content from PDF bytes.
         Returns a structure compatible with the compare.py expectations.
@@ -99,20 +107,27 @@ class PDFExtractor:
         pdf_data = {}
         
         # Extract pages using pdfminer
-        pages = list(extract_pages(pdf_file, laparams=LAParams()))
+        laparams = LAParams(
+            line_margin=0.5,   # Adjust line margin for better text block detection
+            char_margin=2.0,   # Increase char margin to better handle spacing
+            word_margin=0.1,   # Lower word margin to better group words
+            boxes_flow=0.5,    # Adjust boxes flow for improved text flow
+            detect_vertical=True  # Enable vertical text detection
+        )
+        pages = list(extract_pages(pdf_file, laparams=laparams))
         
         # Process each page
         for page_idx, page in enumerate(pages):
             page_num = page_idx + 1  # 1-based page numbering
             
-            # Collect lines and rectangles for table border detection
-            lines, rectangles = self._collect_lines_and_rectangles(page)
+            # Extract line elements for table border detection
+            lines = self._extract_lines(page)
             
             # Extract text elements
             text_elements = self._extract_text_elements(page)
             
-            # Extract tables using our rule-based table detection
-            tables = self._detect_tables(page, text_elements, lines, rectangles)
+            # Extract tables using our enhanced table detection
+            tables = self._detect_tables(page, text_elements, lines)
             
             # Combine all elements
             elements = text_elements + tables
@@ -135,20 +150,7 @@ class PDFExtractor:
         logger.info(f"Extracted {len(pdf_data)} pages with content")
         return pdf_data
     
-    def _collect_lines_and_rectangles(self, page):
-        """Collect lines and rectangles from the page for table border detection."""
-        lines = []
-        rectangles = []
-        
-        for element in page:
-            if isinstance(element, LTRect):
-                rectangles.append((element.x0, element.y0, element.x1, element.y1))
-            elif isinstance(element, LTLine):
-                lines.append((element.x0, element.y0, element.x1, element.y1))
-                
-        return lines, rectangles
-    
-    def _extract_text_elements(self, page):
+    def _extract_text_elements(self, page: LTPage) -> List[Dict]:
         """Extract text elements from a page."""
         text_elements = []
         
@@ -165,7 +167,37 @@ class PDFExtractor:
         
         return text_elements
     
-    def _extract_page_text(self, page):
+    def _extract_lines(self, page: LTPage) -> List[Tuple]:
+        """Extract line elements that could be table borders."""
+        lines = []
+        
+        for obj in page:
+            # Extract horizontal and vertical lines
+            if isinstance(obj, LTRect):
+                # Rectangles (often table cells)
+                x0, y0, x1, y1 = obj.bbox
+                if x1 - x0 < 2:  # Vertical line
+                    lines.append(('v', x0, y0, y1))
+                elif y1 - y0 < 2:  # Horizontal line
+                    lines.append(('h', y0, x0, x1))
+                else:
+                    # Add all 4 sides of the rectangle
+                    lines.append(('h', y0, x0, x1))  # Bottom
+                    lines.append(('h', y1, x0, x1))  # Top
+                    lines.append(('v', x0, y0, y1))  # Left
+                    lines.append(('v', x1, y0, y1))  # Right
+            
+            elif isinstance(obj, LTLine):
+                # Simple lines
+                x0, y0, x1, y1 = obj.bbox
+                if abs(x1 - x0) < 2:  # Vertical line
+                    lines.append(('v', x0, min(y0, y1), max(y0, y1)))
+                elif abs(y1 - y0) < 2:  # Horizontal line
+                    lines.append(('h', y0, min(x0, x1), max(x0, x1)))
+        
+        return lines
+    
+    def _extract_page_text(self, page: LTPage) -> str:
         """Extract all text from a page as a single string."""
         texts = []
         for element in page:
@@ -173,26 +205,24 @@ class PDFExtractor:
                 texts.append(element.get_text())
         return "\n".join(texts)
     
-    def _detect_tables(self, page, text_elements, lines, rectangles):
+    def _detect_tables(self, page: LTPage, text_elements: List[Dict], lines: List[Tuple]) -> List[Dict]:
         """
-        Rule-based table detection algorithm.
-        Detects tables even with missing borders.
+        Enhanced table detection algorithm using deterministic methods.
+        Detects tables with or without explicit borders.
         """
         tables = []
         
-        # First, try to detect tables using explicit borders
-        border_tables = self._detect_tables_with_borders(page, text_elements, lines, rectangles)
-        tables.extend(border_tables)
+        # Process tables based on explicit borders first
+        border_tables = self._detect_tables_by_borders(page, text_elements, lines)
         
-        # Then, detect tables using text alignment and layout
-        text_alignment_tables = self._detect_tables_from_text_alignment(page, text_elements)
+        # Process tables based on alignment patterns for borderless tables
+        alignment_tables = self._detect_tables_by_alignment(page, text_elements, lines)
         
-        # Filter out duplicate tables (those that significantly overlap with border tables)
-        non_duplicate_tables = self._filter_duplicate_tables(text_alignment_tables, border_tables)
-        tables.extend(non_duplicate_tables)
+        # Combine and remove overlaps
+        raw_tables = self._merge_table_candidates(border_tables + alignment_tables)
         
         # Process each detected table
-        for table_idx, raw_table in enumerate(tables):
+        for table_idx, raw_table in enumerate(raw_tables):
             # Generate unique ID for the table
             table_id = f"table_{page.pageid}_{uuid.uuid4().hex[:8]}"
             
@@ -203,395 +233,439 @@ class PDFExtractor:
             content_str = "\n".join("∥".join(str(cell) for cell in row) for row in content)
             content_hash = hashlib.md5(content_str.encode()).hexdigest()
             
-            # Update table with additional info
-            raw_table["table_id"] = table_id
-            raw_table["content_hash"] = content_hash
-            raw_table["has_nested_tables"] = False
-            raw_table["nested_tables"] = []
-            raw_table["type"] = "table"
+            # Check for nested tables
+            nested_tables, has_nested = self._check_for_nested_tables(raw_table, raw_tables)
             
+            # Create table element
+            table_element = {
+                "type": "table",
+                "table_id": table_id,
+                "content": content,
+                "bbox": raw_table.get("bbox", (0, 0, 0, 0)),
+                "content_hash": content_hash,
+                "has_nested_tables": has_nested,
+                "nested_tables": nested_tables
+            }
+            
+            tables.append(table_element)
+        
         return tables
     
-    def _detect_tables_with_borders(self, page, text_elements, lines, rectangles):
-        """Detect tables with explicit borders using lines and rectangles."""
+    def _detect_tables_by_borders(self, page: LTPage, text_elements: List[Dict], lines: List[Tuple]) -> List[Dict]:
+        """Detect tables using explicit border lines."""
         tables = []
         
-        # Identify potential table areas based on rectangles or grid of lines
-        table_areas = []
+        # First check if we have enough lines to form tables
+        if len(lines) < 4:  # Need at least 4 lines to form a table
+            return []
         
-        # Check for complete rectangles which may represent tables
-        for rect in rectangles:
-            table_areas.append(rect)
+        # Group horizontal and vertical lines
+        h_lines = sorted([l for l in lines if l[0] == 'h'], key=lambda x: x[1])
+        v_lines = sorted([l for l in lines if l[0] == 'v'], key=lambda x: x[1])
         
-        # Check for grids formed by lines
-        if lines:
-            # Find horizontal lines
-            h_lines = [(x0, y0, x1, y1) for x0, y0, x1, y1 in lines if abs(y1 - y0) < self.line_proximity_threshold]
-            
-            # Find vertical lines
-            v_lines = [(x0, y0, x1, y1) for x0, y0, x1, y1 in lines if abs(x1 - x0) < self.line_proximity_threshold]
-            
-            # If we have both horizontal and vertical lines, try to find grids
-            if h_lines and v_lines:
-                # Sort by y-coordinate
-                h_lines.sort(key=lambda l: l[1])  # sort by y0
-                
-                # Sort by x-coordinate
-                v_lines.sort(key=lambda l: l[0])  # sort by x0
-                
-                # Group horizontal lines that are close to each other
-                h_line_groups = []
-                current_group = [h_lines[0]]
-                
-                for i in range(1, len(h_lines)):
-                    if abs(h_lines[i][1] - h_lines[i-1][1]) < self.line_proximity_threshold:
-                        current_group.append(h_lines[i])
-                    else:
-                        if len(current_group) > 1:
-                            h_line_groups.append(current_group)
-                        current_group = [h_lines[i]]
-                
-                if len(current_group) > 1:
-                    h_line_groups.append(current_group)
-                
-                # Group vertical lines that are close to each other
-                v_line_groups = []
-                current_group = [v_lines[0]]
-                
-                for i in range(1, len(v_lines)):
-                    if abs(v_lines[i][0] - v_lines[i-1][0]) < self.line_proximity_threshold:
-                        current_group.append(v_lines[i])
-                    else:
-                        if len(current_group) > 1:
-                            v_line_groups.append(current_group)
-                        current_group = [v_lines[i]]
-                
-                if len(current_group) > 1:
-                    v_line_groups.append(current_group)
-                
-                # Identify grid areas from intersecting line groups
-                for h_group in h_line_groups:
-                    for v_group in v_line_groups:
-                        # Calculate potential grid area
-                        x0 = min(l[0] for l in v_group)
-                        y0 = min(l[1] for l in h_group)
-                        x1 = max(l[2] for l in v_group)
-                        y1 = max(l[3] for l in h_group)
-                        
-                        # Check if the grid has sufficient cells
-                        if len(h_group) >= 2 and len(v_group) >= 2:
-                            table_areas.append((x0, y0, x1, y1))
+        # If we don't have enough lines, return empty
+        if len(h_lines) < 2 or len(v_lines) < 2:
+            return []
         
-        # For each potential table area, collect text elements inside
-        for x0, y0, x1, y1 in table_areas:
-            table_text_elements = []
-            
-            for element in text_elements:
-                ex0, ey0, ex1, ey1 = element["bbox"]
+        # Find potential table boundaries by looking for rectangular areas
+        potential_tables = []
+        for i, h1 in enumerate(h_lines[:-1]):
+            for j, h2 in enumerate(h_lines[i+1:], i+1):
+                # Check if two horizontal lines could form top and bottom of a table
+                top_y = max(h1[1], h2[1])
+                bottom_y = min(h1[1], h2[1])
+                if top_y - bottom_y < 20:  # Too narrow to be a table
+                    continue
                 
-                # Check if element is inside the table area
-                if (ex0 >= x0 and ex1 <= x1 and ey0 >= y0 and ey1 <= y1):
-                    table_text_elements.append(element)
-            
-            # If we have text elements, try to organize them into a table
-            if table_text_elements:
-                # Sort by y-coordinate (top to bottom)
-                table_text_elements.sort(key=lambda e: e["bbox"][1], reverse=True)
+                # Find vertical lines that could be left and right boundaries
+                matching_v_lines = []
+                for v in v_lines:
+                    v_x, v_ymin, v_ymax = v[1], v[2], v[3]
+                    # Check if vertical line spans between the horizontal lines
+                    if v_ymin <= bottom_y + 5 and v_ymax >= top_y - 5:
+                        matching_v_lines.append(v)
                 
-                # Group by similar y-coordinates (rows)
-                rows = []
-                current_row = [table_text_elements[0]]
-                current_y = table_text_elements[0]["bbox"][1]
+                # We need at least 2 vertical lines for a table
+                if len(matching_v_lines) < 2:
+                    continue
                 
-                for i in range(1, len(table_text_elements)):
-                    element = table_text_elements[i]
-                    if abs(element["bbox"][1] - current_y) < self.line_proximity_threshold:
-                        current_row.append(element)
-                    else:
-                        # Sort current row by x-coordinate
-                        current_row.sort(key=lambda e: e["bbox"][0])
+                # Sort vertical lines by x position
+                matching_v_lines.sort(key=lambda x: x[1])
+                
+                # Check for text elements inside the table boundaries
+                for left_idx, left_v in enumerate(matching_v_lines[:-1]):
+                    for right_idx, right_v in enumerate(matching_v_lines[left_idx+1:], left_idx+1):
+                        # Potential table area
+                        left_x = left_v[1]
+                        right_x = right_v[1]
                         
-                        # Extract text
-                        row_content = [element["content"] for element in current_row]
-                        rows.append(row_content)
+                        # Check if this area contains text elements
+                        contained_texts = []
+                        for elem in text_elements:
+                            x0, y0, x1, y1 = elem["bbox"]
+                            text = elem["content"]
+                            
+                            # Check if text is inside the potential table
+                            if (left_x - 5 <= x0 <= right_x + 5 and 
+                                bottom_y - 5 <= y0 <= top_y + 5 and
+                                left_x - 5 <= x1 <= right_x + 5 and
+                                bottom_y - 5 <= y1 <= top_y + 5):
+                                contained_texts.append(elem)
                         
-                        # Start new row
-                        current_row = [element]
-                        current_y = element["bbox"][1]
-                
-                # Add the last row
-                if current_row:
-                    current_row.sort(key=lambda e: e["bbox"][0])
-                    row_content = [element["content"] for element in current_row]
-                    rows.append(row_content)
-                
-                # If we have a reasonable table structure, add it
-                if len(rows) >= 2 and all(len(row) > 1 for row in rows):
-                    tables.append({
-                        "content": rows,
-                        "bbox": (x0, y0, x1, y1)
-                    })
+                        # If we have text inside, this could be a table
+                        if contained_texts:
+                            potential_tables.append({
+                                "bbox": (left_x, bottom_y, right_x, top_y),
+                                "text_elements": contained_texts
+                            })
+        
+        # Convert potential tables to actual table structures
+        for pot_table in potential_tables:
+            table_content = self._organize_text_into_table(pot_table["text_elements"], pot_table["bbox"])
+            if table_content and len(table_content) >= 2:  # Require at least 2 rows
+                tables.append({
+                    "content": table_content,
+                    "bbox": pot_table["bbox"]
+                })
         
         return tables
     
-    def _detect_tables_from_text_alignment(self, page, text_elements):
-        """Detect tables using text alignment and layout patterns."""
-        # Group text elements into potential table rows based on vertical alignment
-        rows = self._group_elements_into_rows(text_elements)
+    def _detect_tables_by_alignment(self, page: LTPage, text_elements: List[Dict], lines: List[Tuple]) -> List[Dict]:
+        """
+        Detect tables by analyzing text alignment patterns.
+        This is used for borderless tables.
+        """
+        tables = []
         
-        # Identify potential tables based on row patterns
-        table_candidates = []
+        # Convert text elements to a format for alignment analysis
+        blocks = []
+        for elem in text_elements:
+            x0, y0, x1, y1 = elem["bbox"]
+            text = elem["content"]
+            # Format: (x0, y0, x1, y1, text, type_indicator, group_id)
+            blocks.append((x0, y0, x1, y1, text, None, 0))
         
-        # Check for sequences of rows with similar structure (column count)
-        i = 0
-        while i < len(rows):
-            # Need at least 2 rows to form a table
-            if i + 1 >= len(rows):
-                i += 1
-                continue
+        # Group texts that appear to be in rows (similar y positions)
+        rows = self._group_texts_into_rows(blocks)
+        
+        # Identify column boundaries by analyzing text positions
+        column_x_positions = self._identify_columns(rows)
+        
+        # If we have a tabular structure with consistent columns
+        if len(rows) >= 2 and len(column_x_positions) >= 2:
+            # Determine the table's bounding box
+            min_x = min(b[0] for row in rows for b in row)
+            max_x = max(b[2] for row in rows for b in row)
+            min_y = min(b[1] for row in rows for b in row)
+            max_y = max(b[3] for row in rows for b in row)
             
-            current_row = rows[i]
-            next_row = rows[i + 1]
+            # Create a structured table content from the rows and columns
+            table_content = []
+            for row_blocks in rows:
+                table_row = []
+                # Using the column positions, identify which text belongs to which cell
+                for i in range(len(column_x_positions) - 1):
+                    col_start = column_x_positions[i]
+                    col_end = column_x_positions[i+1]
+                    
+                    # Collect all text blocks that belong to this cell
+                    cell_texts = []
+                    for block in row_blocks:
+                        x0, _, x1, _ = block[:4]
+                        text = block[4]
+                        
+                        # Block belongs to this column if it overlaps with column boundaries
+                        if (col_start <= x0 < col_end) or (col_start < x1 <= col_end) or (x0 <= col_start and x1 >= col_end):
+                            cell_texts.append(text)
+                    
+                    # Join all texts in the cell
+                    cell_content = " ".join(cell_texts).strip() if cell_texts else ""
+                    table_row.append(cell_content)
+                
+                table_content.append(table_row)
             
-            # Check if these rows might form a table (similar column count)
-            if abs(len(current_row) - len(next_row)) <= 1:
-                # Start a potential table with these rows
-                potential_table_rows = [current_row, next_row]
-                row_index = i + 2
-                
-                # Add subsequent rows with similar structure
-                while row_index < len(rows):
-                    next_row = rows[row_index]
-                    # Check if the row has a similar structure to the first row
-                    if abs(len(next_row) - len(current_row)) <= 1:
-                        potential_table_rows.append(next_row)
-                        row_index += 1
-                    else:
-                        break
-                
-                # If we have at least 2 rows with similar structure, consider it a table
-                if len(potential_table_rows) >= 2:
-                    # Calculate bounding box
-                    all_elements = [elem for row in potential_table_rows for elem in row]
-                    x0 = min(elem["bbox"][0] for elem in all_elements)
-                    y0 = min(elem["bbox"][1] for elem in all_elements)
-                    x1 = max(elem["bbox"][2] for elem in all_elements)
-                    y1 = max(elem["bbox"][3] for elem in all_elements)
-                    
-                    # Extract table content
-                    content = []
-                    for row in potential_table_rows:
-                        row_content = [elem["content"] for elem in row]
-                        content.append(row_content)
-                    
-                    table_candidates.append({
-                        "content": content,
-                        "bbox": (x0, y0, x1, y1)
-                    })
-                    
-                    i = row_index  # Skip the rows we've processed
-                else:
-                    i += 1
-            else:
-                i += 1
+            # Only add if we have meaningful content
+            if any(any(cell for cell in row) for row in table_content):
+                tables.append({
+                    "content": table_content,
+                    "bbox": (min_x, min_y, max_x, max_y)
+                })
         
-        # Check for sequences of rows with consistent alignment (column x-positions)
-        tables_from_alignment = self._identify_tables_from_column_alignment(text_elements)
-        table_candidates.extend(tables_from_alignment)
-        
-        # Remove duplicate tables
-        return self._filter_duplicate_tables(table_candidates, [])
+        return tables
     
-    def _group_elements_into_rows(self, text_elements):
-        """Group text elements into rows based on vertical position."""
-        # Sort by y-coordinate (top to bottom)
-        sorted_elements = sorted(text_elements, key=lambda e: -e["bbox"][1])  # Negative for top-to-bottom
+    def _group_texts_into_rows(self, blocks: List[Tuple]) -> List[List[Tuple]]:
+        """Group text blocks into rows based on y-coordinate proximity."""
+        if not blocks:
+            return []
+            
+        # Sort blocks by y-coordinate (top to bottom)
+        sorted_blocks = sorted(blocks, key=lambda b: b[1])
         
         rows = []
-        if not sorted_elements:
-            return rows
-            
-        current_row = [sorted_elements[0]]
-        current_y = sorted_elements[0]["bbox"][1]
+        current_row = [sorted_blocks[0]]
+        current_y = sorted_blocks[0][1]
         
-        for i in range(1, len(sorted_elements)):
-            element = sorted_elements[i]
-            
-            # Check if this element is on the same row
-            if abs(element["bbox"][1] - current_y) < self.line_proximity_threshold:
-                current_row.append(element)
+        for block in sorted_blocks[1:]:
+            # If this block is close enough to be in the same row
+            if abs(block[1] - current_y) < 10:  # Threshold for y-proximity
+                current_row.append(block)
             else:
-                # Sort current row by x-coordinate (left to right)
+                # Sort current row by x-coordinate
+                current_row.sort(key=lambda b: b[0])
+                rows.append(current_row)
+                
+                # Start new row
+                current_row = [block]
+                current_y = block[1]
+        
+        # Add the last row
+        if current_row:
+            current_row.sort(key=lambda b: b[0])
+            rows.append(current_row)
+        
+        return rows
+    
+    def _identify_columns(self, rows: List[List[Tuple]]) -> List[float]:
+        """
+        Identify potential column boundaries by analyzing text positions.
+        Returns a list of x-positions representing column boundaries.
+        """
+        if not rows:
+            return []
+            
+        # Collect all x-positions (start and end of each text block)
+        x_positions = []
+        for row in rows:
+            for block in row:
+                x_positions.append(block[0])  # x0
+                x_positions.append(block[2])  # x1
+        
+        # Sort unique x-positions
+        unique_x = sorted(set(x_positions))
+        
+        # If we have fewer than 2 positions, we can't form columns
+        if len(unique_x) < 2:
+            return []
+            
+        # Group x-positions that are close to each other
+        grouped_x = []
+        current_group = [unique_x[0]]
+        
+        for x in unique_x[1:]:
+            if x - current_group[-1] < 10:  # Threshold for considering positions as the same column
+                current_group.append(x)
+            else:
+                # Use the average of the group as the column position
+                grouped_x.append(sum(current_group) / len(current_group))
+                current_group = [x]
+        
+        # Add the last group
+        if current_group:
+            grouped_x.append(sum(current_group) / len(current_group))
+        
+        # We need at least 2 column boundaries
+        if len(grouped_x) < 2:
+            return []
+            
+        return grouped_x
+    
+    def _merge_table_candidates(self, candidates: List[Dict]) -> List[Dict]:
+        """Merge overlapping table candidates and remove duplicates."""
+        if not candidates:
+            return []
+            
+        # Sort candidates by top-left position
+        sorted_candidates = sorted(candidates, key=lambda c: (c["bbox"][0], c["bbox"][1]))
+        
+        merged = []
+        for candidate in sorted_candidates:
+            # Check if this candidate overlaps significantly with any existing merged table
+            if not merged or not self._has_significant_overlap(candidate, merged):
+                merged.append(candidate)
+        
+        return merged
+    
+    def _has_significant_overlap(self, candidate: Dict, merged_list: List[Dict]) -> bool:
+        """Check if candidate has significant overlap with any table in the merged list."""
+        x0, y0, x1, y1 = candidate["bbox"]
+        cand_area = (x1 - x0) * (y1 - y0)
+        
+        for merged_table in merged_list:
+            m_x0, m_y0, m_x1, m_y1 = merged_table["bbox"]
+            
+            # Calculate intersection
+            intersection_x0 = max(x0, m_x0)
+            intersection_y0 = max(y0, m_y0)
+            intersection_x1 = min(x1, m_x1)
+            intersection_y1 = min(y1, m_y1)
+            
+            # Check if there is an intersection
+            if intersection_x0 < intersection_x1 and intersection_y0 < intersection_y1:
+                intersection_area = (intersection_x1 - intersection_x0) * (intersection_y1 - intersection_y0)
+                
+                # If overlap is more than 70% of either table's area, consider it significant
+                overlap_ratio = intersection_area / min(cand_area, (m_x1 - m_x0) * (m_y1 - m_y0))
+                if overlap_ratio > 0.7:
+                    return True
+        
+        return False
+    
+    def _organize_text_into_table(self, text_elements: List[Dict], bbox: Tuple[float, float, float, float]) -> List[List[str]]:
+        """
+        Organize text elements into a structured table with rows and columns.
+        Uses the bounding box to determine the table boundaries.
+        """
+        if not text_elements:
+            return []
+            
+        # Extract table boundaries
+        table_x0, table_y0, table_x1, table_y1 = bbox
+        
+        # Group text elements by rows based on y-position
+        rows = []
+        sorted_by_y = sorted(text_elements, key=lambda e: e["bbox"][1])
+        
+        current_row = [sorted_by_y[0]]
+        current_y = sorted_by_y[0]["bbox"][1]
+        
+        for elem in sorted_by_y[1:]:
+            y_mid = (elem["bbox"][1] + elem["bbox"][3]) / 2  # y-center of the text
+            
+            # If this element is close enough to be in the same row
+            if abs(y_mid - current_y) < 15:  # Adjusted threshold for row grouping
+                current_row.append(elem)
+            else:
+                # Sort current row by x-position and add to rows
                 current_row.sort(key=lambda e: e["bbox"][0])
                 rows.append(current_row)
                 
                 # Start new row
-                current_row = [element]
-                current_y = element["bbox"][1]
+                current_row = [elem]
+                current_y = y_mid
         
         # Add the last row
         if current_row:
             current_row.sort(key=lambda e: e["bbox"][0])
             rows.append(current_row)
         
-        return rows
-    
-    def _identify_tables_from_column_alignment(self, text_elements):
-        """Identify tables based on consistent column alignment."""
-        rows = self._group_elements_into_rows(text_elements)
+        # Now determine column boundaries by analyzing all rows
+        all_x_positions = []
+        for row in rows:
+            for elem in row:
+                all_x_positions.append(elem["bbox"][0])  # Left edge
+                all_x_positions.append(elem["bbox"][2])  # Right edge
         
-        # No rows or too few rows
-        if len(rows) < 2:
+        # If no positions detected, return empty
+        if not all_x_positions:
             return []
+            
+        # Determine column boundaries using clustering
+        column_boundaries = self._cluster_x_positions(all_x_positions)
         
-        # Find sequences of rows with consistent column x-positions
-        tables = []
-        i = 0
+        # Build the table content using the identified rows and columns
+        table_content = []
+        for row_elements in rows:
+            row_content = self._distribute_row_elements_to_columns(row_elements, column_boundaries)
+            table_content.append(row_content)
         
-        while i < len(rows) - 1:
-            # Check column alignment between this row and the next
-            current_row = rows[i]
-            
-            # Skip rows with only one element (not likely to be table rows)
-            if len(current_row) <= 1:
-                i += 1
-                continue
-            
-            # Start with current row as the first row of a potential table
-            potential_table_rows = [current_row]
-            column_positions = [elem["bbox"][0] for elem in current_row]
-            
-            # Check subsequent rows for similar column alignment
-            row_index = i + 1
-            while row_index < len(rows):
-                next_row = rows[row_index]
-                
-                # Skip rows with only one element
-                if len(next_row) <= 1:
-                    row_index += 1
-                    continue
-                
-                next_positions = [elem["bbox"][0] for elem in next_row]
-                
-                # Check if column positions are similar
-                if self._check_column_alignment(column_positions, next_positions):
-                    potential_table_rows.append(next_row)
-                    row_index += 1
-                else:
-                    break
-            
-            # If we have at least 3 rows with consistent column alignment, consider it a table
-            if len(potential_table_rows) >= 3:
-                # Calculate bounding box
-                all_elements = [elem for row in potential_table_rows for elem in row]
-                x0 = min(elem["bbox"][0] for elem in all_elements)
-                y0 = min(elem["bbox"][1] for elem in all_elements)
-                x1 = max(elem["bbox"][2] for elem in all_elements)
-                y1 = max(elem["bbox"][3] for elem in all_elements)
-                
-                # Extract table content
-                content = []
-                for row in potential_table_rows:
-                    row_content = [elem["content"] for elem in row]
-                    content.append(row_content)
-                
-                tables.append({
-                    "content": content,
-                    "bbox": (x0, y0, x1, y1)
-                })
-                
-                i = row_index  # Skip the rows we've processed
-            else:
-                i += 1
-        
-        return tables
+        return table_content
     
-    def _check_column_alignment(self, positions1, positions2):
-        """Check if two sets of column positions are aligned."""
-        # Different number of columns - allow for off-by-one
-        if abs(len(positions1) - len(positions2)) > 1:
-            return False
-        
+    def _cluster_x_positions(self, x_positions: List[float]) -> List[float]:
+        """
+        Cluster x-positions to identify column boundaries.
+        Uses a simple distance-based clustering.
+        """
+        if not x_positions:
+            return []
+            
         # Sort positions
-        pos1 = sorted(positions1)
-        pos2 = sorted(positions2)
+        sorted_x = sorted(x_positions)
         
-        # Check alignment of available columns
-        min_cols = min(len(pos1), len(pos2))
-        aligned_cols = 0
+        # Identify clusters with a distance threshold
+        clusters = []
+        current_cluster = [sorted_x[0]]
         
-        for i in range(min_cols):
-            if abs(pos1[i] - pos2[i]) < self.line_proximity_threshold:
-                aligned_cols += 1
+        for x in sorted_x[1:]:
+            if x - current_cluster[-1] < 15:  # Threshold for considering positions in the same cluster
+                current_cluster.append(x)
+            else:
+                # Calculate cluster center and add to list
+                clusters.append(sum(current_cluster) / len(current_cluster))
+                current_cluster = [x]
         
-        # Consider aligned if a high percentage of columns are aligned
-        alignment_ratio = aligned_cols / min_cols
-        return alignment_ratio >= self.grid_detection_threshold
+        # Add the last cluster
+        if current_cluster:
+            clusters.append(sum(current_cluster) / len(current_cluster))
+        
+        return clusters
     
-    def _filter_duplicate_tables(self, candidates, existing_tables):
-        """Filter out duplicate table candidates."""
-        if not candidates:
+    def _distribute_row_elements_to_columns(self, row_elements: List[Dict], column_boundaries: List[float]) -> List[str]:
+        """
+        Distribute text elements in a row to their respective columns.
+        Returns a list of strings, one for each column.
+        """
+        if not row_elements or not column_boundaries:
             return []
             
-        # If no existing tables, just check against each other
-        if not existing_tables:
-            filtered = [candidates[0]]
-            
-            for candidate in candidates[1:]:
-                is_duplicate = False
-                
-                for existing in filtered:
-                    if self._is_same_table(candidate, existing):
-                        is_duplicate = True
-                        break
-                
-                if not is_duplicate:
-                    filtered.append(candidate)
-            
-            return filtered
+        # Create empty columns
+        columns = ["" for _ in range(len(column_boundaries))]
         
-        # Check against existing tables
-        filtered = []
-        
-        for candidate in candidates:
-            is_duplicate = False
+        # Assign each text element to the nearest column
+        for elem in row_elements:
+            elem_center = (elem["bbox"][0] + elem["bbox"][2]) / 2
             
-            for existing in existing_tables:
-                if self._is_same_table(candidate, existing):
-                    is_duplicate = True
-                    break
+            # Find the closest column boundary
+            closest_idx = min(range(len(column_boundaries)), 
+                             key=lambda i: abs(column_boundaries[i] - elem_center))
             
-            if not is_duplicate:
-                filtered.append(candidate)
+            # Add text to the column (with space if existing text)
+            if columns[closest_idx]:
+                columns[closest_idx] += " " + elem["content"]
+            else:
+                columns[closest_idx] = elem["content"]
         
-        return filtered
+        return columns
     
-    def _is_same_table(self, table1, table2):
-        """Check if two table candidates represent the same table."""
-        # Get bounding boxes
-        bbox1 = table1.get("bbox", (0, 0, 0, 0))
-        bbox2 = table2.get("bbox", (0, 0, 0, 0))
-        
-        # Calculate overlap ratio
-        x_overlap = max(0, min(bbox1[2], bbox2[2]) - max(bbox1[0], bbox2[0]))
-        y_overlap = max(0, min(bbox1[3], bbox2[3]) - max(bbox1[1], bbox2[1]))
-        
-        area1 = (bbox1[2] - bbox1[0]) * (bbox1[3] - bbox1[1])
-        area2 = (bbox2[2] - bbox2[0]) * (bbox2[3] - bbox2[1])
-        
-        if area1 <= 0 or area2 <= 0:
-            return False
+    def _check_for_nested_tables(self, table: Dict, all_tables: List[Dict]) -> Tuple[List[str], bool]:
+        """
+        Check if a table contains nested tables by analyzing bounding box containment.
+        Returns a list of nested table IDs and a boolean indicating if nesting was found.
+        """
+        if not all_tables:
+            return [], False
             
-        overlap_area = x_overlap * y_overlap
-        overlap_ratio1 = overlap_area / area1
-        overlap_ratio2 = overlap_area / area2
+        parent_bbox = table.get("bbox", (0, 0, 0, 0))
+        parent_area = (parent_bbox[2] - parent_bbox[0]) * (parent_bbox[3] - parent_bbox[1])
         
-        # If one table largely overlaps the other, consider them the same
-        return overlap_ratio1 > 0.7 or overlap_ratio2 > 0.7
+        nested_tables = []
+        
+        for other_table in all_tables:
+            if other_table == table:  # Skip self
+                continue
+                
+            other_bbox = other_table.get("bbox", (0, 0, 0, 0))
+            
+            # Check if other table is contained within this table
+            if (parent_bbox[0] < other_bbox[0] and 
+                parent_bbox[1] < other_bbox[1] and 
+                parent_bbox[2] > other_bbox[2] and 
+                parent_bbox[3] > other_bbox[3]):
+                
+                # Calculate the area of the other table
+                other_area = (other_bbox[2] - other_bbox[0]) * (other_bbox[3] - other_bbox[1])
+                
+                # Check if the nested table is significantly smaller than the parent
+                if other_area < parent_area * self.nested_area_ratio:
+                    # Generate a placeholder ID for the nested table
+                    nested_id = f"nested_{uuid.uuid4().hex[:8]}"
+                    nested_tables.append(nested_id)
+        
+        return nested_tables, len(nested_tables) > 0
     
-    def _process_continuation_tables(self, pdf_data):
+    def _process_continuation_tables(self, pdf_data: Dict) -> Dict:
         """
         Identify and merge tables that continue across multiple pages.
+        Uses header similarity and positioning to detect continuation.
         """
         # Collect all tables from all pages
         all_tables = []
@@ -687,7 +761,7 @@ class PDFExtractor:
         
         return pdf_data
     
-    def _check_table_continuation(self, table1, table2):
+    def _check_table_continuation(self, table1: Dict, table2: Dict) -> bool:
         """
         Check if table2 is a continuation of table1 by comparing headers
         and looking for continuation indicators.
@@ -699,7 +773,7 @@ class PDFExtractor:
         header1 = table1["content"][0] if table1["content"] else []
         header2 = table2["content"][0] if table2["content"] else []
         
-        # Check for header similarity
+        # Check for header similarity using string comparison
         header_similarity = self._calculate_header_similarity(header1, header2)
         
         # Check if table1 has continuation indicators
@@ -707,16 +781,22 @@ class PDFExtractor:
         last_row_text = " ".join(str(cell).lower() for cell in last_row)
         has_continuation_indicator = any(phrase in last_row_text 
                                        for phrase in ["continued", "cont'd", "(continued)", 
-                                                     "continues", "to be continued"])
+                                                     "continues", "to be continued", "(cont)", "(contd)"])
+        
+        # Also check for positional similarity - tables with same width and column alignment
+        positional_similarity = self._check_column_alignment(table1, table2)
         
         # Consider it a continuation if headers are similar or there's a continuation indicator
-        return header_similarity >= self.header_match_threshold or has_continuation_indicator
+        # or the column alignment matches very well
+        return (header_similarity >= self.header_match_threshold or 
+                has_continuation_indicator or
+                positional_similarity >= 0.9)
     
-    def _calculate_header_similarity(self, header1, header2):
-        """Calculate similarity between two table headers using simple string matching."""
+    def _calculate_header_similarity(self, header1: List[str], header2: List[str]) -> float:
+        """Calculate similarity between two table headers."""
         if not header1 or not header2:
             return 0.0
-        
+            
         # Simple similarity: percentage of matching cell values
         matches = 0
         total = max(len(header1), len(header2))
@@ -730,34 +810,75 @@ class PDFExtractor:
                 matches += 1
             elif cell1 in cell2 or cell2 in cell1:
                 matches += 0.7  # Partial match
-            # Add Levenshtein distance for fuzzy matching
-            elif self._levenshtein_similarity(cell1, cell2) > 0.7:
-                matches += 0.5  # Fuzzy match
+            else:
+                # Compare using character-by-character similarity
+                similarity = self._character_similarity(cell1, cell2)
+                if similarity > 0.7:
+                    matches += similarity
         
         return matches / total if total > 0 else 0.0
-
-    def _levenshtein_similarity(self, s1, s2):
-        """Calculate similarity based on Levenshtein distance."""
-        # Calculate Levenshtein distance
-        if len(s1) < len(s2):
-            return self._levenshtein_similarity(s2, s1)
-        
-        if len(s2) == 0:
+    
+    def _character_similarity(self, str1: str, str2: str) -> float:
+        """Calculate character-level similarity between two strings."""
+        if not str1 and not str2:
+            return 1.0
+        if not str1 or not str2:
             return 0.0
+            
+        # Basic edit distance calculation
+        m, n = len(str1), len(str2)
         
-        previous_row = range(len(s2) + 1)
-        for i, c1 in enumerate(s1):
-            current_row = [i + 1]
-            for j, c2 in enumerate(s2):
-                insertions = previous_row[j + 1] + 1
-                deletions = current_row[j] + 1
-                substitutions = previous_row[j] + (c1 != c2)
-                current_row.append(min(insertions, deletions, substitutions))
-            previous_row = current_row
+        # Create distance matrix
+        dp = [[0 for _ in range(n+1)] for _ in range(m+1)]
         
-        # Convert distance to similarity (0 to 1)
-        max_len = max(len(s1), len(s2))
-        distance = previous_row[-1]
-        similarity = 1 - (distance / max_len) if max_len > 0 else 0
+        # Initialize first row and column
+        for i in range(m+1):
+            dp[i][0] = i
+        for j in range(n+1):
+            dp[0][j] = j
+        
+        # Fill the matrix
+        for i in range(1, m+1):
+            for j in range(1, n+1):
+                if str1[i-1] == str2[j-1]:
+                    dp[i][j] = dp[i-1][j-1]
+                else:
+                    dp[i][j] = 1 + min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1])
+        
+        # Calculate similarity from edit distance
+        max_len = max(m, n)
+        similarity = 1 - (dp[m][n] / max_len if max_len > 0 else 0)
         
         return similarity
+    
+    def _check_column_alignment(self, table1: Dict, table2: Dict) -> float:
+        """
+        Check if two tables have similar column alignment by comparing column widths.
+        Returns a similarity score between 0 and 1.
+        """
+        # Extract the bounding boxes
+        bbox1 = table1.get("bbox", (0, 0, 0, 0))
+        bbox2 = table2.get("bbox", (0, 0, 0, 0))
+        
+        # Calculate table widths
+        width1 = bbox1[2] - bbox1[0]
+        width2 = bbox2[2] - bbox2[0]
+        
+        # If widths are very different, tables are likely not related
+        width_ratio = min(width1, width2) / max(width1, width2) if max(width1, width2) > 0 else 0
+        if width_ratio < 0.8:
+            return 0.0
+            
+        # If no content, can't compare further
+        if not table1.get("content") or not table2.get("content"):
+            return width_ratio
+            
+        # Compare column counts
+        col_count1 = len(table1["content"][0]) if table1["content"] else 0
+        col_count2 = len(table2["content"][0]) if table2["content"] else 0
+        
+        if col_count1 != col_count2:
+            return width_ratio * 0.5  # Penalize different column counts
+            
+        # For tables with same column count, calculate similarity
+        return width_ratio

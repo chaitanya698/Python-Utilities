@@ -1,4 +1,12 @@
-
+"""
+generate.py - Enhanced report builder
+------------------
+Deterministic report generation with visual cues for document differences:
+- Modified content: RED
+- New content: BLUE
+- Similar content: GREEN
+- Content only in one file: RED (deleted) or BLUE (inserted)
+"""
 import os
 import re
 import logging
@@ -7,6 +15,7 @@ import hashlib
 from datetime import datetime
 from typing import Dict, Optional, List, Any, Tuple, Set
 from collections import defaultdict
+from difflib import SequenceMatcher
 from jinja2 import Template
 
 logger = logging.getLogger(__name__)
@@ -18,8 +27,8 @@ class ReportGenerator:
         os.makedirs(output_dir, exist_ok=True)
         self.output_dir = output_dir
         self.table_registry = {}
+        self.similarity_threshold = 0.8
 
-    # ─── public ───────────────────────────────────────────────────
     def generate_html_report(self, results: Dict,
                              pdf1_name: str, pdf2_name: str,
                              metadata: Optional[Dict] = None) -> str:
@@ -54,7 +63,6 @@ class ReportGenerator:
         logger.info(f"HTML report written to {output_path}")
         return output_path
 
-    # ─── helpers ──────────────────────────────────────────────────
     def _build_table_registry(self, results: Dict):
         """Build a registry of all tables for cross-referencing."""
         self.table_registry = {}  # Reset registry
@@ -155,36 +163,7 @@ class ReportGenerator:
             # Replace table differences with new hierarchical version
             page["table_differences"] = new_table_differences
         
-        return processed 
-    def _add_nested_tables(self, parent_table, hierarchy, processed_tables):
-            """Recursively add nested tables to parent table."""
-            parent_id = parent_table.get("table_id1") or parent_table.get("table_id2")
-            if not parent_id or parent_id not in hierarchy:
-                return
-                
-            # Get children
-            children_ids = hierarchy[parent_id]["children"]
-            
-            # Process each child
-            for child_id in children_ids:
-                if child_id in processed_tables:
-                    continue
-                    
-                # Get child info
-                child_info = hierarchy[child_id]
-                child_table = child_info["table"]
-                
-                # Mark as processed
-                processed_tables.add(child_id)
-                
-                # Add to parent's nested objects
-                if "nested_table_objects" not in parent_table:
-                    parent_table["nested_table_objects"] = []
-                    
-                parent_table["nested_table_objects"].append(child_table)
-                
-                # Process this child's children
-                self._add_nested_tables(child_table, hierarchy, processed_tables)
+        return processed
                 
     def _preprocess_results_for_visual_clarity(self, results: Dict) -> Dict:
         """
@@ -412,47 +391,7 @@ class ReportGenerator:
             summary=summary,
             title=f"PDF Comparison: {pdf1_name} vs {pdf2_name}",
             comparison_date=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        )      
-        
-    def _standardize_table_differences(self, table_diffs):
-        """Standardize table difference statuses and prepare cell-level difference highlighting."""
-        standardized = []
-        
-        for diff in table_diffs:
-            status = diff.get("status", "")
-            
-            # Map statuses to standard visual categories
-            if status == "deleted":
-                visual_status = "deleted"  # RED
-            elif status == "inserted":
-                visual_status = "inserted"  # BLUE
-            elif status == "modified":
-                visual_status = "modified"  # RED
-            elif status == "moved":
-                visual_status = "moved"  # Show as moved
-            elif status == "matched":
-                visual_status = "matched"  # No highlighting
-            elif status == "similar":
-                visual_status = "similar"  # GREEN
-            else:
-                visual_status = status
-            
-            standardized_diff = diff.copy()
-            standardized_diff["visual_status"] = visual_status
-            
-            # Prepare cell-level difference highlighting
-            if "content1" in diff and "content2" in diff and diff.get("status") == "modified":
-                standardized_diff["cell_diffs"] = self._compute_cell_differences(diff["content1"], diff["content2"])
-            
-            # Add visual_status to nested tables if present
-            if "nested_table_objects" in standardized_diff:
-                standardized_diff["nested_table_objects"] = self._standardize_table_differences(
-                    standardized_diff["nested_table_objects"]
-                )
-            
-            standardized.append(standardized_diff)
-        
-        return standardized
+        )
 
     def _compute_cell_differences(self, table1, table2):
         """Compute cell-level differences between two tables."""
@@ -499,20 +438,54 @@ class ReportGenerator:
         return result
 
     def _calculate_similarity(self, str1, str2):
-        """Calculate similarity between two strings."""
+        """Calculate similarity between two strings using difflib."""
         if not str1 and not str2:
             return 1.0
         if not str1 or not str2:
             return 0.0
             
-        # Simple Jaccard similarity for demonstration
-        set1 = set(str1.lower().split())
-        set2 = set(str2.lower().split())
+        # Calculate similarity using SequenceMatcher
+        return SequenceMatcher(None, str1.lower(), str2.lower()).ratio()
+
+    def _standardize_table_differences(self, table_diffs):
+        """Standardize table difference statuses and prepare cell-level difference highlighting."""
+        standardized = []
         
-        intersection = len(set1.intersection(set2))
-        union = len(set1.union(set2))
+        for diff in table_diffs:
+            status = diff.get("status", "")
+            
+            # Map statuses to standard visual categories
+            if status == "deleted":
+                visual_status = "deleted"  # RED
+            elif status == "inserted":
+                visual_status = "inserted"  # BLUE
+            elif status == "modified":
+                visual_status = "modified"  # RED
+            elif status == "moved":
+                visual_status = "moved"  # Show as moved
+            elif status == "matched":
+                visual_status = "matched"  # No highlighting
+            elif status == "similar":
+                visual_status = "similar"  # GREEN
+            else:
+                visual_status = status
+            
+            standardized_diff = diff.copy()
+            standardized_diff["visual_status"] = visual_status
+            
+            # Prepare cell-level difference highlighting
+            if "content1" in diff and "content2" in diff and diff.get("status") == "modified":
+                standardized_diff["cell_diffs"] = self._compute_cell_differences(diff["content1"], diff["content2"])
+            
+            # Add visual_status to nested tables if present
+            if "nested_table_objects" in standardized_diff:
+                standardized_diff["nested_table_objects"] = self._standardize_table_differences(
+                    standardized_diff["nested_table_objects"]
+                )
+            
+            standardized.append(standardized_diff)
         
-        return intersection / union if union > 0 else 0.0
+        return standardized
     
     def _template_str(self):
         """Return the simplified HTML template string with side-by-side comparison and highlighted differences."""
@@ -595,7 +568,9 @@ class ReportGenerator:
                     padding: 8px 12px;
                     background-color: #f1f1f1;
                     border: 1px solid #ddd;
-                    border-radius: 4px;
+                    border-bottom: none;
+                    margin-right: 5px;
+                    border-radius: 4px 4px 0 0;
                     cursor: pointer;
                     text-decoration: none;
                     color: #333;
@@ -1161,4 +1136,4 @@ class ReportGenerator:
     @staticmethod
     def _safe(name):
         """Create a safe filename from the document name."""
-        return re.sub(r"[^\w\-\.]", "_", name)[:50]    
+        return re.sub(r"[^\w\-\.]", "_", name)[:50]
