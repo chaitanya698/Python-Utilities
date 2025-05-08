@@ -69,7 +69,7 @@ def callhome():
         "applicationVersion": "1.0"
     }
     
-    url = "https://ca02726-orchestra-callhome-service-dev.apps.cic-lmr-n-01.cf.wellsfargo.net/api/application"
+    url = "
     json_data = json.dumps(data)
     headers = {'Content-Type': 'application/json'}
     
