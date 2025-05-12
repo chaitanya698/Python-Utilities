@@ -2,20 +2,23 @@ from typing import List, Optional, TypedDict
 
 
 class ChatState(TypedDict, total=False):
-    # ── rolling chat log ───────────────────────────
-    messages: List[str]            # "user: …", "assistant: …"
+    
+    messages: List[str]            
     user_input: str
     assistant_response: str
 
-    # ── control flags ──────────────────────────────
-    awaiting: Optional[str]        # "confirm" when the bot awaits yes/no
+    
+    awaiting: Optional[str]        
+    done: bool                     
 
-    # ── business data ──────────────────────────────
+    
     intent: Optional[str]
     confirmed: Optional[bool]
     result: Optional[str]
 
-    # ── error channel ──────────────────────────────
-    error_msg: Optional[str]
+    
+    exit_requested: bool   
+    history_requested: bool                   
 
-    done: bool                     # set True to exit the CLI loop
+    
+    error_msg: Optional[str]
