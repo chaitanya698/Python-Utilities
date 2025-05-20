@@ -12,6 +12,9 @@ logger.setLevel(logging.INFO)
 class ReportGenerator:
 
     SIMILARITY_THRESHOLD_FOR_PAIRING = 0.70
+    # NEW CONSTANTS FOR CLEANING UP TABLE DIFFERENCES
+    HIDE_MODIFIED_TABLE_SIMILARITY_THRESHOLD = 0.97  # Hide MODIFIED tables if similarity is >= 97%
+    HIDE_MATCHED_TABLE_SIMILARITY_THRESHOLD = 1.0    # Hide MATCHED tables if similarity is >= 100%
 
     def __init__(self, output_dir: str = "reports"):
         os.makedirs(output_dir, exist_ok=True)
@@ -60,13 +63,13 @@ class ReportGenerator:
     def _normalize_cell_for_render(self, cell_text: Any) -> str:
         return str(cell_text).strip().lower()
 
-    def _render_single_html_table_for_pairing(self, 
+    def _render_single_html_table_for_pairing(self,
                                              main_content: Optional[List[List[str]]],
                                              compare_content: Optional[List[List[str]]],
                                              is_left_side: bool) -> str:
-        if main_content is None: # Check specifically for None if the entire table for this side is absent
+        if main_content is None:
             return "<p>Table data not available for this side.</p>"
-        if not main_content: # Check for empty list (e.g. table exists but has no rows)
+        if not main_content:
              return "<p>Table is present but empty.</p>"
 
         html_parts = ['<table class="diff-table" border="1">']
@@ -75,13 +78,13 @@ class ReportGenerator:
         
         num_compare_rows = len(compare_content) if compare_content else 0
         num_compare_cols = 0
-        if compare_content and any(compare_content): # Ensure compare_content itself and its rows are not None
+        if compare_content and any(compare_content):
             num_compare_cols = max(len(row) if row is not None else 0 for row in compare_content)
 
         max_rows = max(num_main_rows, num_compare_rows)
         max_cols = max(num_main_cols, num_compare_cols)
 
-        if max_cols == 0 and max_rows == 0: 
+        if max_cols == 0 and max_rows == 0:
              html_parts.append("<tr><td>Empty table structure.</td></tr>")
         else:
             for i in range(max_rows):
@@ -95,52 +98,46 @@ class ReportGenerator:
                     if compare_content and i < num_compare_rows and compare_content[i] is not None and j < len(compare_content[i]):
                         cell_compare_text_orig, cell_compare_exists = str(compare_content[i][j]), True
                     
-                    cell_display_final_content = "" # This will hold the main content part (text, highlighted text, or &nbsp;)
+                    cell_display_final_content = ""
                     cell_class = ""
                     key_html_snippet = ""
-                    apply_key_context = False # Flag to determine if key context should be prepended
+                    apply_key_context = False
 
-                    # Determine key_html_snippet if this cell (j) is not the first one in the row.
-                    # The key is always sourced from main_content (the table for the current side being rendered).
-                    if j > 0: # Only apply key context if it's not the first column
+                    if j > 0:
                         if i < num_main_rows and main_content[i] is not None and (j-1) < len(main_content[i]):
                             key_cell_text_from_main = str(main_content[i][j-1])
-                            if key_cell_text_from_main.strip(): # Ensure key_cell_text is not just whitespace
+                            if key_cell_text_from_main.strip():
                                 key_html_snippet = f'<div class="diff-table-key-context"><span class="key-label">{self._escape(key_cell_text_from_main)}:</span></div>'
                     
                     if cell_main_exists:
-                        if cell_compare_exists: # Cell exists in both main and compare
+                        if cell_compare_exists:
                             norm_main = self._normalize_cell_for_render(cell_main_text_orig)
                             norm_compare = self._normalize_cell_for_render(cell_compare_text_orig)
                             if norm_main == norm_compare:
                                 cell_class = "cell-similar"
                                 cell_display_final_content = self._escape(cell_main_text_orig)
-                                # apply_key_context remains False for similar cells (unless changed)
-                            else: 
+                            else:
                                 cell_class = "cell-modified"
                                 highlighted_current, _ = self._highlight_word_diff(cell_main_text_orig, cell_compare_text_orig)
                                 cell_display_final_content = highlighted_current
-                                apply_key_context = True # Apply key for modified cells
-                        else: # Cell exists in main_content, but not in compare_content
-                            # This cell's content is part of the current side's table.
+                                apply_key_context = True
+                        else:
                             cell_class = "cell-deleted" if is_left_side else "cell-inserted"
                             cell_display_final_content = self._escape(cell_main_text_orig)
-                            apply_key_context = True # Apply key for cells showing existing content that's diff
-                    elif cell_compare_exists: # Cell does NOT exist in main_content, but exists in compare_content
-                        # This cell is a placeholder on the current side for content from the other side.
+                            apply_key_context = True
+                    elif cell_compare_exists:
                         cell_class = "cell-inserted" if is_left_side else "cell-deleted"
-                        cell_display_final_content = "&nbsp;" # Placeholder
-                        apply_key_context = True # Apply key context for the placeholder
-                    else: # Neither cell exists (e.g., padding for uneven tables, or truly empty cell in both)
                         cell_display_final_content = "&nbsp;"
-                        cell_class = "cell-empty" 
+                        apply_key_context = True
+                    else:
+                        cell_display_final_content = "&nbsp;"
+                        cell_class = "cell-empty"
 
-                    # Construct the final display HTML for the cell
-                    if apply_key_context and key_html_snippet: # Prepend key if applicable and key exists
+                    if apply_key_context and key_html_snippet:
                         cell_display_text = f'{key_html_snippet}<div class="value-content">{cell_display_final_content}</div>'
-                    elif apply_key_context: # Is a diff cell, but no key (e.g. first column)
+                    elif apply_key_context:
                          cell_display_text = f'<div class="value-content">{cell_display_final_content}</div>'
-                    else: # Not a diff cell where key context is applied (e.g. similar, or empty)
+                    else:
                         cell_display_text = cell_display_final_content
 
                     html_parts.append(f'<td class="{cell_class}">{cell_display_text}</td>')
@@ -148,10 +145,10 @@ class ReportGenerator:
         html_parts.append("</table>")
         return "".join(html_parts)
 
-    def _generate_paired_table_diff_html(self, 
-                                         table1_content: Optional[List[List[str]]], 
+    def _generate_paired_table_diff_html(self,
+                                         table1_content: Optional[List[List[str]]],
                                          table2_content: Optional[List[List[str]]],
-                                         table1_id: Optional[str], 
+                                         table1_id: Optional[str],
                                          table2_id: Optional[str]) -> str:
         side1_html = self._render_single_html_table_for_pairing(table1_content, table2_content, is_left_side=True)
         side2_html = self._render_single_html_table_for_pairing(table2_content, table1_content, is_left_side=False)
@@ -162,7 +159,7 @@ class ReportGenerator:
         html.append(f'<h6>{self._escape(pdf1_table_name)} ({self._escape(self.pdf1_name)})</h6>')
         html.append(side1_html)
         html.append('</div>')
-        html.append('<div class="table-diff-separator"></div>') 
+        html.append('<div class="table-diff-separator"></div>')
         html.append('<div class="table-diff-side">')
         pdf2_table_name = table2_id if table2_id else "Table"
         html.append(f'<h6>{self._escape(pdf2_table_name)} ({self._escape(self.pdf2_name)})</h6>')
@@ -200,7 +197,7 @@ class ReportGenerator:
             if progress_callback and total_pages_to_process > 0:
                 progress_callback(0.1 + 0.7 * (pages_processed_count / total_pages_to_process))
         
-        summary_stats = self._calculate_summary(results) 
+        summary_stats = self._calculate_summary(results)
         if progress_callback: progress_callback(0.85)
         
         env = Environment(loader=BaseLoader(), autoescape=select_autoescape(['html', 'xml']))
@@ -214,9 +211,9 @@ class ReportGenerator:
         html_output = tpl.render(
             generation_datetime=comparison_datetime_formatted,
             comparison_date=comparison_date_formatted,
-            pdf1_name=self._escape(self.pdf1_name), 
+            pdf1_name=self._escape(self.pdf1_name),
             pdf2_name=self._escape(self.pdf2_name),
-            pages=processed_pages, 
+            pages=processed_pages,
             summary=summary_stats,
             escape_html=self._escape
         )
@@ -273,17 +270,17 @@ class ReportGenerator:
                     "page1": d_page1, "page2": i_page2_val,
                     "block1_bbox": d_item.get("block1_bbox"), "block2_bbox": best_i_match.get("block2_bbox"),
                     "status": final_status,
-                    "id1": d_item_id1, 
-                    "id2": i_item_id2  
+                    "id1": d_item_id1,
+                    "id2": i_item_id2
                 }
                 candidate_items.append(paired_item)
         
         for del_idx, d_item in enumerate(deleted_items):
-            if del_idx not in consumed_deleted_indices: 
+            if del_idx not in consumed_deleted_indices:
                 d_item.setdefault("id1", d_item.get("id", f"del_text_unpaired_{del_idx}"))
                 candidate_items.append(d_item)
         for ins_idx, i_item in enumerate(inserted_items):
-            if ins_idx not in consumed_inserted_indices: 
+            if ins_idx not in consumed_inserted_indices:
                 i_item.setdefault("id2", i_item.get("id", f"ins_text_unpaired_{ins_idx}"))
                 candidate_items.append(i_item)
 
@@ -306,13 +303,13 @@ class ReportGenerator:
             if status == "moved" and score == 1.0:
                 relevant_for_this_page = False
             elif status == "modified":
-                if current_page_num == page1: 
+                if current_page_num == page1:
                     relevant_for_this_page = True
                     highlighted1, highlighted2 = self._highlight_word_diff(text1, text2)
-                    display_item["display_text1"] = highlighted1 
+                    display_item["display_text1"] = highlighted1
                     display_item["display_text2"] = highlighted2
-            elif status == "moved": 
-                if current_page_num == page1 or current_page_num == page2: 
+            elif status == "moved":
+                if current_page_num == page1 or current_page_num == page2:
                     relevant_for_this_page = True
                     h1, h2 = self._highlight_word_diff(text1, text2)
                     display_item["display_text1"] = h1
@@ -328,10 +325,10 @@ class ReportGenerator:
                     relevant_for_this_page = True
                     display_item["display_text1"] = f"<i>Not present in {self._escape(self.pdf1_name)}</i>"
                     display_item["display_text2"] = self._escape(text2)
-            elif status == "matched": 
+            elif status == "matched":
                 if current_page_num == page1 :
                     relevant_for_this_page = True
-                    display_item["display_text1"] = self._escape(text1) 
+                    display_item["display_text1"] = self._escape(text1)
                     display_item["display_text2"] = self._escape(text2)
             
             if relevant_for_this_page:
@@ -363,16 +360,17 @@ class ReportGenerator:
                 if ins_idx in consumed_inserted_indices: continue
                 i_content2 = i_table.get("table2_content")
                 sim_score = 0.0
-                if d_content1 and i_content2:
+                if d_content1 and i_content2: # Both have content
                     flat1 = " ".join([" ".join(map(str, r)) for r in d_content1 if r])
                     flat2 = " ".join([" ".join(map(str, r)) for r in i_content2 if r])
                     sim_score = self._calculate_text_similarity_local(flat1, flat2)
-                elif d_content1 is None and i_content2 is None: # Both are None means they are similar (empty)
+                elif d_content1 is None and i_content2 is None: # Both are None (e.g. empty tables from extraction)
                     sim_score = 1.0
+                # If one is None and other has content, sim_score remains 0.0 (implicitly a big difference)
 
                 if sim_score > highest_sim:
                     highest_sim, best_i_match, best_i_idx = sim_score, i_table, ins_idx
-
+            
             if best_i_match and highest_sim >= self.SIMILARITY_THRESHOLD_FOR_PAIRING:
                 consumed_deleted_indices.add(del_idx)
                 consumed_inserted_indices.add(best_i_idx)
@@ -396,7 +394,7 @@ class ReportGenerator:
             if ins_idx not in consumed_inserted_indices:
                 i_table.setdefault("id2", i_table.get("table2_id", i_table.get("id", f"ins_tab_unpaired_{ins_idx}")))
                 candidate_items.append(i_table)
-
+        
         final_rendered_list = []
         def get_sort_key_for_render_table(item):
             page_val = item.get("page1") if item.get("page1") is not None else item.get("page2", float('inf'))
@@ -408,44 +406,45 @@ class ReportGenerator:
         for item in sorted(candidate_items, key=get_sort_key_for_render_table):
             status, p1, p2 = item["status"], item.get("page1"), item.get("page2")
             score = item.get("score", 0.0)
-            disp_item, relevant = item.copy(), False
+            disp_item = item.copy()
+            relevant = False  # Default to False, prove relevance
 
             t1_content = item.get("table1_content")
             t2_content = item.get("table2_content")
             t1_id = item.get("table1_id")
             t2_id = item.get("table2_id")
 
-            if status == "moved" and score == 1.0: # Identical moved tables are less likely to need detailed cell diff
-                relevant = False # Or choose to show them if needed
-            elif status == "moved":
-                if current_page_num == p1 or current_page_num == p2:
-                    relevant = True
-                    disp_item["move_info"] = f"Moved: PDF1 p.{p1} ➜ PDF2 p.{p2} (Similarity: {score*100:.1f}%)"
-                    disp_item["diff_html"] = self._generate_paired_table_diff_html(t1_content, t2_content, t1_id, t2_id)
+            if status == "moved":
+                if score < 1.0:  # Only consider showing moved if not perfectly identical
+                    if current_page_num == p1 or current_page_num == p2:
+                        relevant = True
+                        disp_item["move_info"] = f"Moved: PDF1 p.{p1} ➜ PDF2 p.{p2} (Similarity: {score*100:.1f}%)"
+                        disp_item["diff_html"] = self._generate_paired_table_diff_html(t1_content, t2_content, t1_id, t2_id)
             elif status == "modified":
-                 # MODIFICATION START: Filter out 100% similar modified tables
-                 if score == 1.0:
-                     relevant = False
-                 # MODIFICATION END
-                 elif current_page_num == p1: # Show on page of PDF1
-                     relevant = True
-                     disp_item["diff_html"] = self._generate_paired_table_diff_html(t1_content, t2_content, t1_id, t2_id)
+                # Only show if score is below the high similarity threshold
+                if score < self.HIDE_MODIFIED_TABLE_SIMILARITY_THRESHOLD:
+                    if current_page_num == p1:  # Show on page of PDF1
+                        relevant = True
+                        disp_item["diff_html"] = self._generate_paired_table_diff_html(t1_content, t2_content, t1_id, t2_id)
             elif status == "matched":
-                 if current_page_num == p1: # Show on page of PDF1
-                     relevant = True
-                     # For matched, you might choose not to show detailed diff_html or a simplified version
-                     disp_item["diff_html"] = self._generate_paired_table_diff_html(t1_content, t2_content, t1_id, t2_id)
+                # Only show if score is below the perfect match threshold (e.g. not 100%)
+                if score < self.HIDE_MATCHED_TABLE_SIMILARITY_THRESHOLD:
+                    if current_page_num == p1:  # Show on page of PDF1
+                        relevant = True
+                        disp_item["diff_html"] = self._generate_paired_table_diff_html(t1_content, t2_content, t1_id, t2_id)
             elif status == "deleted":
-                 if current_page_num == p1: # Table from PDF1 deleted in PDF2, show on PDF1's page
-                     relevant = True
-                     disp_item["diff_html"] = self._generate_paired_table_diff_html(t1_content, None, t1_id, None)
+                if current_page_num == p1:
+                    relevant = True
+                    disp_item["diff_html"] = self._generate_paired_table_diff_html(t1_content, None, t1_id, None)
             elif status == "inserted":
-                 if current_page_num == p2: # Table inserted in PDF2, show on PDF2's page
-                     relevant = True
-                     disp_item["diff_html"] = self._generate_paired_table_diff_html(None, t2_content, None, t2_id)
+                if current_page_num == p2:
+                    relevant = True
+                    disp_item["diff_html"] = self._generate_paired_table_diff_html(None, t2_content, None, t2_id)
 
-            if relevant: final_rendered_list.append(disp_item)
+            if relevant:
+                final_rendered_list.append(disp_item)
         return final_rendered_list
+
     def _calculate_summary(self, results: Dict) -> Dict:
         total_pages_in_docs = results.get("max_pages", 0)
         pages_with_diff_count = 0
@@ -455,7 +454,7 @@ class ReportGenerator:
         s_deletions = 0
         s_moved_elements = 0
         
-        processed_unique_ids_for_dashboard = set() 
+        processed_unique_ids_for_dashboard = set()
 
         for pg_num_str, page_data in results.get("pages", {}).items():
             current_page_num = int(pg_num_str)
@@ -465,8 +464,8 @@ class ReportGenerator:
             text_items_for_page = self._prepare_text_diffs_for_render(raw_text_diffs_for_page, current_page_num)
             
             if text_items_for_page: page_has_reportable_item_this_iteration = True
-            for item in text_items_for_page: 
-                temp_id1 = item.get("id1") 
+            for item in text_items_for_page:
+                temp_id1 = item.get("id1")
                 uid_part1 = str(temp_id1) if temp_id1 is not None else \
                                 str(item.get("block1_bbox", "_NO_BBOX1_")) + str(item.get("text1", "")[:20])
 
@@ -475,15 +474,15 @@ class ReportGenerator:
                                 str(item.get("block2_bbox", "_NO_BBOX2_")) + str(item.get("text2", "")[:20])
                 
                 item_key_for_dashboard = None
-                current_status = item["status"] 
+                current_status = item["status"]
 
-                if current_status == "modified" or (current_status == "moved" and item.get("score", 0.0) < 1.0) : 
+                if current_status == "modified" or (current_status == "moved" and item.get("score", 0.0) < 1.0) :
                     item_key_for_dashboard = ("text", tuple(sorted((uid_part1, uid_part2))), current_status)
                 elif current_status == "deleted":
                     item_key_for_dashboard = ("text", uid_part1, current_status)
                 elif current_status == "inserted":
                      item_key_for_dashboard = ("text", uid_part2, current_status)
-                elif current_status == "moved" and item.get("score", 0.0) == 1.0 : # perfectly moved, count as moved if not already
+                elif current_status == "moved" and item.get("score", 0.0) == 1.0 : 
                     item_key_for_dashboard = ("text", tuple(sorted((uid_part1, uid_part2))), "perfectly_moved_text")
 
 
@@ -496,10 +495,11 @@ class ReportGenerator:
 
 
             raw_table_diffs_for_page = page_data.get("table_differences_raw", page_data.get("table_differences", []))
+            # The call below uses the MODIFIED _prepare_table_diffs_for_render, so table_items_for_page will be filtered
             table_items_for_page = self._prepare_table_diffs_for_render(raw_table_diffs_for_page, current_page_num)
 
             if table_items_for_page: page_has_reportable_item_this_iteration = True
-            for item in table_items_for_page:
+            for item in table_items_for_page: # Iterates over THE FILTERED LIST
                 temp_id1 = item.get("id1", item.get("table1_id"))
                 uid_part1 = str(temp_id1) if temp_id1 is not None else \
                                 str(item.get("table1_bbox", "_NO_TBBOX1_")) + str(item.get("table1_content", [])[:1])
@@ -510,14 +510,17 @@ class ReportGenerator:
                                 str(item.get("table2_bbox", "_NO_TBBOX2_")) + str(item.get("table2_content", [])[:1])
 
                 item_key_for_dashboard = None
-                current_status = item["status"]
+                current_status = item["status"] # This status is from items that *passed* the relevancy filters
+                
+                # This logic determines how items contribute to summary counts.
+                # Since 'item' is from a filtered list, high-similarity 'modified' or 'matched' tables are already excluded.
                 if current_status == "modified" or (current_status == "moved" and item.get("score", 0.0) < 1.0):
                     item_key_for_dashboard = ("table", tuple(sorted((uid_part1, uid_part2))), current_status)
                 elif current_status == "deleted":
                     item_key_for_dashboard = ("table", uid_part1, current_status)
                 elif current_status == "inserted":
                      item_key_for_dashboard = ("table", uid_part2, current_status)
-                elif current_status == "moved" and item.get("score", 0.0) == 1.0:
+                elif current_status == "moved" and item.get("score", 0.0) == 1.0: # Perfectly moved tables (already filtered out from display)
                      item_key_for_dashboard = ("table", tuple(sorted((uid_part1, uid_part2))), "perfectly_moved_table")
 
 
@@ -533,17 +536,16 @@ class ReportGenerator:
         
         text_diff_blocks_count = sum(1 for uid_tuple in processed_unique_ids_for_dashboard if uid_tuple[0] == "text" and uid_tuple[2] != "perfectly_moved_text")
         table_diff_blocks_count = sum(1 for uid_tuple in processed_unique_ids_for_dashboard if uid_tuple[0] == "table" and uid_tuple[2] != "perfectly_moved_table")
-        # s_moved_elements is already counted from items with status "moved"
-
+        
         return {
-            "total_pages": total_pages_in_docs, 
+            "total_pages": total_pages_in_docs,
             "pages_with_differences": pages_with_diff_count,
-            "text_differences": text_diff_blocks_count, # Excludes perfectly moved from this specific count
-            "table_differences": table_diff_blocks_count, # Excludes perfectly moved from this specific count
-            "ds_modifications": s_modifications,
+            "text_differences": text_diff_blocks_count,
+            "table_differences": table_diff_blocks_count, # This will reflect the filtered tables
+            "ds_modifications": s_modifications, # This will reflect the filtered tables
             "ds_insertions": s_insertions,
             "ds_deletions": s_deletions,
-            "ds_moved_elements": s_moved_elements, # This now correctly sums up all "moved" identified
+            "ds_moved_elements": s_moved_elements,
         }
 
     _TEMPLATE = r"""<!DOCTYPE html>
@@ -566,21 +568,20 @@ header{background:#BF3F3F; color:#fff; padding:20px 25px; margin:-25px -25px 20p
 .report-info-grid > div > span:first-child { font-weight: 600; color: #495057; }
 .report-info-grid > div > span:last-child { color: #212529; }
 
-/* Refined Summary Dashboard (for Modifications, Insertions, etc.) */
 .summary-dashboard { 
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); /* Responsive columns */
-    gap: 18px; /* Spacing between tiles */
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); 
+    gap: 18px; 
     margin: 25px 0; 
-    padding: 0; /* No padding on the container itself */
+    padding: 0; 
 }
 .dashboard-item { 
     background: #ffffff; 
-    border: 1px solid #e0e0e0; /* Lighter border */
+    border: 1px solid #e0e0e0; 
     border-radius: 6px; 
     padding: 18px; 
     text-align: center; 
-    box-shadow: 0 2px 8px rgba(0,0,0,0.07); /* Subtle shadow */
+    box-shadow: 0 2px 8px rgba(0,0,0,0.07); 
     transition: transform 0.2s ease-out, box-shadow 0.2s ease-out;
 }
 .dashboard-item:hover {
@@ -604,7 +605,6 @@ header{background:#BF3F3F; color:#fff; padding:20px 25px; margin:-25px -25px 20p
 .dashboard-item.deletions .dashboard-value { color: #dd2c00; } 
 .dashboard-item.moved-elements .dashboard-value { color: #2962ff; } 
 
-/* ---- Primary Summary Tile Look (as per screenshot) ---- */
 .summary {
     display: grid; 
     grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); 
@@ -646,7 +646,6 @@ header{background:#BF3F3F; color:#fff; padding:20px 25px; margin:-25px -25px 20p
 .stat-item.pages-diff .stat-value { color: #F44336; }
 .stat-item.text-diff .stat-value { color: #FFC107; }
 .stat-item.table-diff .stat-value { color: #FF9800; }
-/* ---- End of Primary Summary Tile Look ---- */
 
 
 .diff-legend { display: flex; flex-wrap: wrap; gap: 10px; padding: 12px 15px; background: #f8f9fa; border-radius: 6px; margin: 25px 0; border: 1px solid #e9ecef; }
@@ -658,13 +657,13 @@ header{background:#BF3F3F; color:#fff; padding:20px 25px; margin:-25px -25px 20p
 .legend-moved { background-color: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb;}
 
 .page-nav{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:25px;position:sticky;top:0;background:rgba(255,255,255,0.98);padding:10px 0;z-index:1000;border-bottom:1px solid #dee2e6; box-shadow: 0 2px 4px rgba(0,0,0,0.05);}
-.page-button{padding:8px 15px;background:#f8f9fa;border:1px solid #ced4da; border-radius:4px;text-decoration:none;color:#333; /* Unhighlighted color to dark grey/black */ font-weight:500; transition: all 0.2s ease-in-out;}
-.page-button:hover{background:#BF3F3F; color:#fff; border-color:#A93434;} /* Hover to match active style */
+.page-button{padding:8px 15px;background:#f8f9fa;border:1px solid #ced4da; border-radius:4px;text-decoration:none;color:#333; font-weight:500; transition: all 0.2s ease-in-out;}
+.page-button:hover{background:#BF3F3F; color:#fff; border-color:#A93434;} 
 .page-button.active{background:#BF3F3F;color:#fff;border-color:#A93434; font-weight:bold;} 
 
 .page-section{margin-bottom:25px;border:1px solid #dee2e6;border-radius:6px;padding:20px; background: #fff;}
 .page-header{background:#f8f9fa;padding:12px 18px;margin:-20px -20px 20px -20px;border-bottom:1px solid #dee2e6;display:flex;justify-content:space-between;align-items:center;border-radius:6px 6px 0 0;}
-.page-title{color:#333; font-size: 1.5em; font-weight: 600;} /* Page title to dark grey/black */
+.page-title{color:#333; font-size: 1.5em; font-weight: 600;} 
 
 .difference-item{margin-bottom:20px;border:1px solid #e0e0e0;border-radius:5px;overflow:hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.04);}
 .difference-header{padding:10px 15px;background:#f8f9fa;border-bottom:1px solid #e0e0e0;font-weight:600;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap; gap: 10px;}
@@ -698,9 +697,9 @@ header{background:#BF3F3F; color:#fff; padding:20px 25px; margin:-25px -25px 20p
 .diff-table{width:100%;border-collapse:collapse;font-size:13px;table-layout:auto;}
 .diff-table th,.diff-table td{border:1px solid #dee2e6;padding:8px 10px;text-align:left;word-wrap:break-word; vertical-align: top;}
 .diff-table th{background:#f8f9fa;font-weight:600; color: #495057;}
-.diff-table-key-context { margin-bottom: 4px; } /* Styles the div holding the key */
-.diff-table-key-context .key-label { font-weight: bold; color: #555; font-size:0.9em; } /* Styles the key text itself */
-.value-content { /* wrapper for the actual value, ensures it's on a new line after key if key exists */ }
+.diff-table-key-context { margin-bottom: 4px; } 
+.diff-table-key-context .key-label { font-weight: bold; color: #555; font-size:0.9em; } 
+.value-content { }
 
 .cell-similar{background:#f0fff0 !important;}
 .cell-modified { background:#fff9e6 !important; }
@@ -746,6 +745,16 @@ document.addEventListener('DOMContentLoaded', function () {
 
     if (window.location.hash) {
         updateActiveStateFromHash(window.location.hash);
+        const targetSection = document.querySelector(window.location.hash);
+        if (targetSection) {
+             setTimeout(() => { // Ensure layout is stable
+                const headerOffsetEl = document.querySelector('.page-nav');
+                const headerOffset = headerOffsetEl ? headerOffsetEl.offsetHeight + 15 : 70;
+                const elementPosition = targetSection.getBoundingClientRect().top;
+                const offsetPosition = elementPosition + window.pageYOffset - headerOffset;
+                window.scrollTo({ top: offsetPosition, behavior: "auto" }); // Use auto for initial load
+            }, 100); // Small delay
+        }
     } else if (pageButtons.length > 0) {
         setActiveButton(pageButtons[0]);
     }
