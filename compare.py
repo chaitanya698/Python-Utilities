@@ -263,11 +263,12 @@ class PdfCompare:
         """Match tables globally using content hash and similarity."""
         matches = []
         
+        # Decorate tables with original index and page for easier tracking
         tables1 = [(pg, tbl, idx) for idx, (pg, tbl) in enumerate(tables1_orig)]
         tables2 = [(pg, tbl, idx) for idx, (pg, tbl) in enumerate(tables2_orig)]
 
         tables2_by_hash = defaultdict(list)
-        for pg, tbl, idx in tables2:
+        for pg, tbl, idx in tables2: # This loop expects (pg, tbl, idx)
             if "content_hash" in tbl: # Should always be present due to _collect_tables optimization
                 tables2_by_hash[tbl["content_hash"]].append((pg, tbl, idx))
         
@@ -275,7 +276,7 @@ class PdfCompare:
         matched_t2_indices_exact = set()
 
         # Pass 1: Exact matches by content_hash
-        for pg1, t1, t1_idx in tables1:
+        for pg1, t1, t1_idx in tables1: # This loop expects (pg, t1, t1_idx)
             if t1.get("content_hash") in tables2_by_hash:
                 for pg2_cand, t2_cand, t2_idx_cand in tables2_by_hash[t1["content_hash"]]:
                     if t2_idx_cand not in matched_t2_indices_exact:
@@ -292,15 +293,19 @@ class PdfCompare:
                         matched_t2_indices_exact.add(t2_idx_cand)
                         break 
         
-        tables1_remaining = [(i, t, idx) for i, (t, idx) in enumerate(tables1) if idx not in matched_t1_indices_exact]
-        tables2_remaining = [(i, t, idx) for i, (t, idx) in enumerate(tables2) if idx not in matched_t2_indices_exact]
-
+        # FIX for ValueError: too many values to unpack (expected 2)
+        # tables1_remaining and tables2_remaining are already lists of 3-tuples (pg, t, idx)
+        tables1_remaining = [(pg, t, idx) for pg, t, idx in tables1 if idx not in matched_t1_indices_exact]
+        tables2_remaining = [(pg, t, idx) for pg, t, idx in tables2 if idx not in matched_t2_indices_exact]
 
         # Pass 2: Similarity matches for remaining tables - Parallelized
         # Optimization 1: Generate tasks for parallel fuzzy matching
         table_match_tasks = []
-        for t1_orig_idx, (pg1, t1, t1_idx) in tables1_remaining:
-            for t2_orig_idx, (pg2, t2, t2_idx) in tables2_remaining:
+        # FIX for ValueError: too many values to unpack (expected 2)
+        # Directly unpack the 3-tuple (pg1, t1, t1_idx) as tables1_remaining elements are already 3-tuples
+        for pg1, t1, t1_idx in tables1_remaining:
+            # Directly unpack the 3-tuple (pg2, t2, t2_idx) as tables2_remaining elements are already 3-tuples
+            for pg2, t2, t2_idx in tables2_remaining:
                 table_match_tasks.append(((pg1, t1, t1_idx), (pg2, t2, t2_idx)))
 
         def _calculate_table_fuzzy_match_score(task_tuple):
@@ -350,7 +355,8 @@ class PdfCompare:
                     current_matched_t2_indices.add(t2_idx)
 
         # Add tables only in pdf1 (deleted)
-        for t1_orig_idx, (pg1, t1, t1_idx) in tables1_remaining:
+        # FIX: Directly unpack the 3-tuple (pg1, t1, t1_idx)
+        for pg1, t1, t1_idx in tables1_remaining:
             if t1_idx not in matched_t1_indices_exact and t1_idx not in current_matched_t1_indices:
                 diff_details = self._compare_individual_tables(t1, None)
                 matches.append({
@@ -361,7 +367,8 @@ class PdfCompare:
                 })
 
         # Add tables only in pdf2 (inserted)
-        for t2_orig_idx, (pg2, t2, t2_idx) in tables2_remaining:
+        # FIX: Directly unpack the 3-tuple (pg2, t2, t2_idx)
+        for pg2, t2, t2_idx in tables2_remaining:
             if t2_idx not in matched_t2_indices_exact and t2_idx not in current_matched_t2_indices:
                 diff_details = self._compare_individual_tables(None, t2)
                 matches.append({
@@ -384,8 +391,10 @@ class PdfCompare:
         # Cache key using sorted hashes of table content strings
         content1_str = str(t1.get("content"))
         content2_str = str(t2.get("content"))
-        hash1 = hashlib.md5(content1_str.encode()).hexdigest() # This hashing can be avoided if content_hash is always available and used
-        hash2 = hashlib.md5(content2_str.encode()).hexdigest() # This hashing can be avoided if content_hash is always available and used
+        # Using pre-computed hash if available, otherwise compute it
+        hash1 = t1.get("content_hash", hashlib.md5(content1_str.encode()).hexdigest())
+        hash2 = t2.get("content_hash", hashlib.md5(content2_str.encode()).hexdigest())
+        
         cache_key_tuple = tuple(sorted((hash1, hash2)))
 
         if cache_key_tuple in self.table_comparison_cache:
@@ -532,22 +541,28 @@ class PdfCompare:
 
         for match in text_matches:
             if match["status"] == "moved":
-                if match.get("block1") and "hash" in match["block1"]: # Use block's pre-computed hash
+                # Ensure block1 and block2 exist before trying to access their 'hash'
+                if match.get("block1") and "hash" in match["block1"]:
                     moved_text_fingerprints_pdf1.add(match["block1"]["hash"])
                 if match.get("block2") and "hash" in match["block2"]:
                      moved_text_fingerprints_pdf2.add(match["block2"]["hash"])
         
         for match in text_matches:
             status = match["status"]
-            text1_hash = match.get("block1", {}).get("hash")
-            text2_hash = match.get("block2", {}).get("hash")
+            
+            # FIX for AttributeError: 'NoneType' object has no attribute 'get'
+            # Check if block1 exists before calling .get("hash")
+            text1_hash = match.get("block1").get("hash") if match.get("block1") else None
+            # Check if block2 exists before calling .get("hash")
+            text2_hash = match.get("block2").get("hash") if match.get("block2") else None
+
             page1 = match.get("page1")
             page2 = match.get("page2")
 
             # Skip deleted/inserted if they are part of an already accounted "moved" operation
-            if status == "deleted" and text1_hash in moved_text_fingerprints_pdf1:
+            if status == "deleted" and text1_hash is not None and text1_hash in moved_text_fingerprints_pdf1:
                 continue
-            if status == "inserted" and text2_hash in moved_text_fingerprints_pdf2:
+            if status == "inserted" and text2_hash is not None and text2_hash in moved_text_fingerprints_pdf2:
                 continue
 
             diff_item = {
@@ -594,12 +609,13 @@ class PdfCompare:
             table1_content = match.get("table1_content")
             table2_content = match.get("table2_content")
 
-            table1_hash = match.get("table1_content_hash", hashlib.md5(str(table1_content).encode()).hexdigest() if table1_content else None)
-            table2_hash = match.get("table2_content_hash", hashlib.md5(str(table2_content).encode()).hexdigest() if table2_content else None)
+            # FIX: Ensure table1_content and table2_content are not None before hashing
+            table1_hash = match.get("table1_content_hash", hashlib.md5(str(table1_content).encode()).hexdigest() if table1_content is not None else None)
+            table2_hash = match.get("table2_content_hash", hashlib.md5(str(table2_content).encode()).hexdigest() if table2_content is not None else None)
             
-            if status == "deleted" and table1_hash in moved_table_fingerprints_pdf1:
+            if status == "deleted" and table1_hash is not None and table1_hash in moved_table_fingerprints_pdf1:
                 continue
-            if status == "inserted" and table2_hash in moved_table_fingerprints_pdf2:
+            if status == "inserted" and table2_hash is not None and table2_hash in moved_table_fingerprints_pdf2:
                 continue
 
             diff_item = {
