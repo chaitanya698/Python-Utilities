@@ -1,135 +1,128 @@
-Here’s a detailed breakdown of approaches to maintain sticky sessions (session affinity) in an AI chatbot deployed on an OpenShift Container Platform (OCP) cluster, using a Route resource. The aim is to ensure that once a user starts a session on one pod/instance, all subsequent requests go to the same instance.
+# errors.py
+from enum import Enum
+import logging
+import traceback
+from flask import jsonify, request
+from werkzeug.exceptions import HTTPException
 
-⸻
+log = logging.getLogger(__name__)
 
-✅ Sticky Session Approaches in OpenShift (OCP)
+# ────────────────────────────────────────────────────────────────
+# 1.  Canonical error catalogue
+# ────────────────────────────────────────────────────────────────
+class ComplaintError(Enum):
+    # HTTP 422 – processing error in a downstream component
+    AI_MODEL_UNAVAILABLE          = ("C-101", 422, "AI model processing not available.")
+    CUSTOMER_SEARCH_UNAVAILABLE   = ("C-102", 422, "Customer search processing not available.")
+    HR_DATA_UNAVAILABLE           = ("C-103", 422, "HR data processing not available.")
+    SUBMISSION_FAILED             = ("C-104", 422, "Complaints submission processing failed or unavailable.")
 
-🔹 1. Using ROUTE with Cookie-Based Session Affinity (Default in OpenShift)
+    # HTTP 500 – service-wide failure
+    SERVICE_TEMPORARILY_DOWN      = ("C-100", 500, "Complaints AI temporarily unavailable.")
 
-OpenShift routes support sticky sessions using a special cookie (router.openshift.io/cookie_name). This cookie is set by the HAProxy router.
+    # helper properties
+    @property
+    def sub_code(self):  return self.value[0]
 
-🔧 Required Changes in route.yaml:
+    @property
+    def http(self):      return self.value[1]
 
-apiVersion: route.openshift.io/v1
-kind: Route
-metadata:
-  name: complaint-chatbot
-  annotations:
-    haproxy.router.openshift.io/disable_cookies: "false"
-spec:
-  host: chatbot.example.com
-  to:
-    kind: Service
-    name: chatbot-service
-  port:
-    targetPort: 8080
-  tls:
-    termination: edge
-  wildcardPolicy: None
-
-This creates a sticky session using a default route cookie (like router-xxxx).
-
-✅ Pros:
-	•	Native to OpenShift — zero extra configuration at application level.
-	•	Automatic HAProxy handling.
-	•	Works out of the box with most frontend frameworks.
-
-❌ Cons:
-	•	Only works for browser clients or clients that support cookies.
-	•	Won’t persist across deployments (new pods mean new routing).
-
-⸻
-
-🔹 2. Using Source IP-Based Affinity
-
-This uses the client’s IP address as a hash to route traffic consistently to the same pod.
-
-🔧 Required Changes:
-
-No changes in route.yaml, but modify your Service definition:
-
-apiVersion: v1
-kind: Service
-metadata:
-  name: chatbot-service
-spec:
-  selector:
-    app: chatbot
-  ports:
-    - port: 80
-      targetPort: 8080
-  sessionAffinity: ClientIP
-
-✅ Pros:
-	•	Simple.
-	•	Works with API clients that don’t use cookies.
-	•	Transparent to the application.
-
-❌ Cons:
-	•	Not reliable when clients are behind NAT or proxies (e.g., mobile clients, ISPs).
-	•	Doesn’t scale well in global or cloud-based deployments.
-
-⸻
-
-🔹 3. Use an Ingress Controller (e.g., NGINX) with Sticky Sessions
-
-If you’re using a custom Ingress Controller like NGINX, you can configure sticky sessions via NGINX annotations (not native OCP).
-
-🔧 YAML Annotations Example (if using NGINX Ingress instead of HAProxy):
-
-metadata:
-  annotations:
-    nginx.ingress.kubernetes.io/affinity: "cookie"
-    nginx.ingress.kubernetes.io/session-cookie-name: "chatbot-session"
-    nginx.ingress.kubernetes.io/session-cookie-hash: "sha1"
-
-✅ Pros:
-	•	Fine-grained control.
-	•	Can customize cookie names, timeouts, hashes.
-
-❌ Cons:
-	•	Not native to OCP Route; needs Ingress support.
-	•	Extra complexity and configuration.
-
-⸻
-
-🔹 4. Session Persistence Using Redis or DB + Stateless App Instances
-
-Instead of sticky sessions, design the app to be stateless and store session data externally (Redis, DB).
-
-✅ Pros:
-	•	True scalability and resilience.
-	•	No sticky routing dependency.
-	•	Better for horizontal scaling and rolling updates.
-
-❌ Cons:
-	•	Requires significant app architecture change.
-	•	Latency to Redis/DB must be optimized.
-	•	Slightly more complex to implement.
-
-⸻
-
-✅ Summary of Approaches
-
-Approach	Stateful?	Works for API Clients	Resilient to Scaling	OCP Native	Notes
-HAProxy Cookie (Route-based)	Yes	No (only browsers)	Medium	✅ Yes	Add route.yaml annotations
-Source IP Affinity (Service)	Yes	✅ Yes	Low (IP hashing fails under NAT)	✅ Yes	Simple config change
-NGINX Ingress with Cookies	Yes	Limited	Medium	❌ No (Ingress-specific)	Only if you’re using NGINX
-External Session Store (Redis)	No	✅ Yes	✅ High	✅ Yes	Preferred for scale & resilience
+    @property
+    def default_msg(self): return self.value[2]
 
 
-⸻
+# ────────────────────────────────────────────────────────────────
+# 2.  Base API exception
+# ────────────────────────────────────────────────────────────────
+class APIException(Exception):
+    """
+    Base class for everything we *intend* to raise.
+    """
+    def __init__(
+        self,
+        catalogue_entry: ComplaintError,
+        *,
+        message: str | None = None,
+        payload: dict | None = None,
+    ) -> None:
+        self.status_code = catalogue_entry.http
+        self.sub_code    = catalogue_entry.sub_code
+        self.message     = message or catalogue_entry.default_msg
+        self.payload     = payload or {}
+        super().__init__(self.message)
 
-🛠️ Recommendation
 
-For short-term stickiness in OCP:
+# Convenience short-names you can raise from your code
+class AIModelUnavailable(APIException):
+    def __init__(self, message: str | None = None):
+        super().__init__(ComplaintError.AI_MODEL_UNAVAILABLE, message=message)
 
-✅ Use Route-based sticky session (HAProxy + Cookie) via route.yaml annotations.
 
-For long-term scalability:
+class CustomerSearchUnavailable(APIException):
+    def __init__(self, message: str | None = None):
+        super().__init__(ComplaintError.CUSTOMER_SEARCH_UNAVAILABLE, message=message)
 
-🔁 Migrate to stateless app with Redis/DB for storing session info. Stickiness becomes unnecessary.
 
-⸻
+class HRDataUnavailable(APIException):
+    def __init__(self, message: str | None = None):
+        super().__init__(ComplaintError.HR_DATA_UNAVAILABLE, message=message)
 
-Let me know if you want example session_manager.py using Redis for multi-instance resumption.
+
+class SubmissionFailed(APIException):
+    def __init__(self, message: str | None = None):
+        super().__init__(ComplaintError.SUBMISSION_FAILED, message=message)
+
+
+# ────────────────────────────────────────────────────────────────
+# 3.  Registration helper – call exactly once in create_app()
+# ────────────────────────────────────────────────────────────────
+def register_error_handlers(app):
+    """
+    Attach global Flask error handlers.
+    """
+
+    # 3.1 API-level errors we raised on purpose
+    @app.errorhandler(APIException)
+    def _handle_api_exc(exc: APIException):
+        return _json(exc.status_code, exc.sub_code, exc.message)
+
+    # 3.2 Werkzeug routing / abort() errors (404, 405, 400 …)
+    @app.errorhandler(HTTPException)
+    def _handle_http_exc(exc: HTTPException):
+        # Pass through status code, but there is no sub-code – mark "None"
+        return _json(exc.code, None, exc.description)
+
+    # 3.3 Absolutely everything else (coding bugs, time-outs, lib errors …)
+    @app.errorhandler(Exception)
+    def _handle_fallback(exc: Exception):
+        # Log the traceback for later inspection
+        log.exception(
+            "Uncaught exception on %s %s\n%s",
+            request.method,
+            request.path,
+            traceback.format_exc(),
+        )
+        # Wrap in our generic "service down" definition
+        cat = ComplaintError.SERVICE_TEMPORARILY_DOWN
+        return _json(cat.http, cat.sub_code, cat.default_msg)
+
+    # Nothing to return – Flask uses the decorated functions
+
+
+# ────────────────────────────────────────────────────────────────
+# 4.  Small helper to build the envelope
+# ────────────────────────────────────────────────────────────────
+def _json(http_status: int, sub_code: str | None, message: str):
+    """
+    Normalises every error into one schema:
+      { status, code, sub_code, message }
+    """
+    body = {
+        "status": "error",
+        "code": http_status,
+        "sub_code": sub_code,      # None for plain HTTP errors
+        "message": message,
+    }
+    return jsonify(body), http_status
+
+
