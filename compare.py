@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from difflib import SequenceMatcher
 from typing import Dict, List, Tuple, Optional, Callable
 from collections import defaultdict
+import math # For more advanced similarity thresholds
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -27,12 +28,12 @@ class PdfCompare:
         self.diff_threshold = diff_threshold
         self.cell_match_threshold = cell_match_threshold
         self.fuzzy_match_threshold = fuzzy_match_threshold
-        self.max_workers = max_workers or os.cpu_count() or 4 # Ensure at least 1 worker
-        # Ensure executor is initialized only if max_workers > 0
-        if self.max_workers > 0:
-            self.executor = ThreadPoolExecutor(max_workers=self.max_workers)
+        self.max_workers = max_workers if max_workers is not None else (os.cpu_count() or 4)
+        if self.max_workers <= 0: # Ensure at least 1 worker for sequential execution if 0 or negative is passed
+            self.max_workers = 1 
+            self.executor = None # Or handle single-threaded execution explicitly
         else:
-            self.executor = None # Or handle single-threaded execution
+            self.executor = ThreadPoolExecutor(max_workers=self.max_workers)
 
         self.table_comparison_cache = {}
         self.text_similarity_cache = {}
@@ -41,13 +42,13 @@ class PdfCompare:
                     f"cell_match_threshold={cell_match_threshold}, "
                     f"fuzzy_match_threshold={fuzzy_match_threshold}, max_workers={self.max_workers}")
 
-    def _execute_parallel(self, func, items):
+    def _execute_parallel(self, func, items, *args, **kwargs):
         """Helper to run functions in parallel or sequentially if executor is not available."""
-        if self.executor:
-            futures = [self.executor.submit(func, item) for item in items]
+        if self.executor and self.max_workers > 1: # Only parallelize if more than 1 worker
+            futures = [self.executor.submit(func, item, *args, **kwargs) for item in items]
             return [future.result() for future in as_completed(futures)]
         else:
-            return [func(item) for item in items]
+            return [func(item, *args, **kwargs) for item in items]
 
     def compare_pdfs(self, pdf1: Dict, pdf2: Dict,
                      progress_callback: Callable = None) -> Dict:
@@ -60,6 +61,7 @@ class PdfCompare:
 
         if progress_callback: progress_callback(0.1)
 
+        # Optimization 1: Collect tables with pre-computed hash for raw content
         tables1 = list(self._collect_tables(pdf1))
         tables2 = list(self._collect_tables(pdf2))
         text_blocks1 = self._collect_text_blocks(pdf1)
@@ -78,12 +80,10 @@ class PdfCompare:
         if progress_callback: progress_callback(0.7)
         
         # Post-process text matches (e.g., for splits, continuations)
-        # This step needs to be carefully reviewed if it alters text1/text2 incorrectly
         text_matches_processed = self._post_process_text_matches(text_matches_raw)
         if progress_callback: progress_callback(0.8)
 
         # Organize matches by page for the report
-        # This is a critical step for correct "moved" handling
         organized_diffs = self._organize_differences_by_page(text_matches_processed, table_matches)
         
         for p in range(1, max_pages + 1):
@@ -116,33 +116,38 @@ class PdfCompare:
         return text_blocks
 
     def _collect_tables(self, pdf_data: Dict) -> List[Tuple[int, Dict]]:
-        """Extract tables with page info."""
+        """Extract tables with page info and pre-compute content hash."""
         tables = []
         for pg, pdata in pdf_data.items():
             for elem in pdata.get("elements", []):
                 if elem.get("type") == "table":
+                    # Optimization 5: Pre-compute content hash for table
+                    table_content_str = str(elem.get("content"))
+                    elem["content_hash"] = hashlib.md5(table_content_str.encode()).hexdigest()
                     tables.append((pg, elem))
         return tables
 
     def _match_text_blocks_global(self, blocks1: List[Dict], blocks2: List[Dict]) -> List[Dict]:
         """Match text blocks globally, prioritizing exact matches, then fuzzy."""
         matches = []
-        # Create a dictionary for quick lookup of blocks in pdf2 by hash
+        
         blocks2_by_hash = defaultdict(list)
         for block in blocks2:
             blocks2_by_hash[block["hash"]].append(block)
 
-        # Create a set of matched block2 indices to avoid reusing them
+        matched_block1_indices = set()
         matched_block2_indices = set()
 
         # Pass 1: Exact matches (by hash)
         for i, b1 in enumerate(blocks1):
             if b1["hash"] in blocks2_by_hash:
-                # Find the best exact match (e.g., closest by original index if multiple)
-                # For simplicity, take the first available one
-                found_match_in_b2 = False
                 for b2_candidate in blocks2_by_hash[b1["hash"]]:
-                    b2_idx = blocks2.index(b2_candidate) # Get original index for tracking
+                    # Find original index for tracking, assumes blocks2 is stable
+                    try:
+                        b2_idx = next(idx for idx, block in enumerate(blocks2) if block is b2_candidate)
+                    except StopIteration:
+                        continue # Should not happen if b2_candidate came from blocks2
+
                     if b2_idx not in matched_block2_indices:
                         status = "moved" if b1["page"] != b2_candidate["page"] else "matched"
                         matches.append({
@@ -151,51 +156,77 @@ class PdfCompare:
                             "text1": b1["content"], "text2": b2_candidate["content"],
                             "page1": b1["page"], "page2": b2_candidate["page"]
                         })
+                        matched_block1_indices.add(i)
                         matched_block2_indices.add(b2_idx)
-                        found_match_in_b2 = True
                         break 
-                if found_match_in_b2:
-                    blocks1[i] = None # Mark as matched
 
-        blocks1_remaining = [b for b in blocks1 if b is not None]
+        blocks1_remaining = [(i, b) for i, b in enumerate(blocks1) if i not in matched_block1_indices]
+        blocks2_remaining = [(i, b) for i, b in enumerate(blocks2) if i not in matched_block2_indices]
         
-        # Pass 2: Fuzzy matches for remaining blocks
-        for b1 in blocks1_remaining:
-            best_b2_match = None
-            highest_score = self.fuzzy_match_threshold - 0.01 # Ensure score must be >= threshold
+        # Pass 2: Fuzzy matches for remaining blocks - Parallelized
+        # Optimization 1: Generate tasks for parallel fuzzy matching
+        match_tasks = []
+        for b1_idx, b1 in blocks1_remaining:
+            for b2_idx, b2 in blocks2_remaining:
+                match_tasks.append(((b1_idx, b1), (b2_idx, b2)))
 
-            for b2_idx, b2 in enumerate(blocks2):
-                if b2_idx in matched_block2_indices:
+        # Use _execute_parallel for similarity calculations
+        # Need a helper function to wrap the similarity calculation and return the full match info
+        def _calculate_fuzzy_match_score(task_tuple):
+            (b1_idx, b1), (b2_idx, b2) = task_tuple
+            text1_content = b1.get("content", "")
+            text2_content = b2.get("content", "")
+            cache_key_tuple = tuple(sorted((b1["hash"], b2["hash"])))
+
+            if cache_key_tuple in self.text_similarity_cache:
+                score = self.text_similarity_cache[cache_key_tuple]
+            else:
+                score = self._calculate_text_similarity(text1_content, text2_content)
+                self.text_similarity_cache[cache_key_tuple] = score
+            
+            return {
+                "b1_idx": b1_idx, "b1": b1,
+                "b2_idx": b2_idx, "b2": b2,
+                "score": score
+            }
+
+        if match_tasks:
+            logger.info(f"Executing {len(match_tasks)} fuzzy text match tasks in parallel.")
+            # Use a smaller chunk size for results if memory is an issue for very large lists
+            all_scores = self._execute_parallel(_calculate_fuzzy_match_score, match_tasks)
+            logger.info("Finished fuzzy text match tasks.")
+
+            # Process results to find best matches, resolving conflicts greedily
+            # Sort by score descending
+            all_scores.sort(key=lambda x: x["score"], reverse=True)
+
+            current_matched_b1_indices = set()
+            current_matched_b2_indices = set()
+
+            for result in all_scores:
+                b1_idx = result["b1_idx"]
+                b2_idx = result["b2_idx"]
+                score = result["score"]
+
+                if score < self.fuzzy_match_threshold:
                     continue
 
-                # Ensure text1 and text2 are strings
-                text1_content = b1.get("content", "")
-                text2_content = b2.get("content", "")
-                
-                # Use a tuple of hashes for caching similarity to ensure order doesn't matter for cache key
-                cache_key_tuple = tuple(sorted((b1["hash"], b2["hash"])))
-
-                if cache_key_tuple in self.text_similarity_cache:
-                    score = self.text_similarity_cache[cache_key_tuple]
-                else:
-                    score = self._calculate_text_similarity(text1_content, text2_content)
-                    self.text_similarity_cache[cache_key_tuple] = score
-                
-                if score > highest_score:
-                    highest_score = score
-                    best_b2_match = b2
-            
-            if best_b2_match:
-                b2_match_idx = blocks2.index(best_b2_match)
-                status = "moved" if b1["page"] != best_b2_match["page"] else "modified"
-                matches.append({
-                    "type": "text",
-                    "block1": b1, "block2": best_b2_match, "status": status, "score": highest_score,
-                    "text1": b1["content"], "text2": best_b2_match["content"], # Ensure text2 is correctly populated
-                    "page1": b1["page"], "page2": best_b2_match["page"]
-                })
-                matched_block2_indices.add(b2_match_idx)
-            else: # b1 is in pdf1 only (deleted)
+                if b1_idx not in current_matched_b1_indices and b2_idx not in current_matched_b2_indices:
+                    b1 = result["b1"]
+                    b2 = result["b2"]
+                    status = "moved" if b1["page"] != b2["page"] else "modified"
+                    matches.append({
+                        "type": "text",
+                        "block1": b1, "block2": b2, "status": status, "score": score,
+                        "text1": b1["content"], "text2": b2["content"],
+                        "page1": b1["page"], "page2": b2["page"]
+                    })
+                    current_matched_b1_indices.add(b1_idx)
+                    current_matched_b2_indices.add(b2_idx)
+        
+        # Add unmatched blocks from pdf1 (deleted)
+        for i, b1 in blocks1_remaining:
+            if i not in matched_block1_indices and i not in current_matched_b1_indices:
                 matches.append({
                     "type": "text",
                     "block1": b1, "block2": None, "status": "deleted", "score": 0.0,
@@ -203,9 +234,9 @@ class PdfCompare:
                     "page1": b1["page"], "page2": None
                 })
 
-        # Add blocks that are in pdf2 only (inserted)
-        for b2_idx, b2 in enumerate(blocks2):
-            if b2_idx not in matched_block2_indices:
+        # Add unmatched blocks from pdf2 (inserted)
+        for i, b2 in blocks2_remaining:
+            if i not in matched_block2_indices and i not in current_matched_b2_indices:
                 matches.append({
                     "type": "text",
                     "block1": None, "block2": b2, "status": "inserted", "score": 0.0,
@@ -222,12 +253,8 @@ class PdfCompare:
 
     def _post_process_text_matches(self, matches: List[Dict]) -> List[Dict]:
         """
-        Post-process text matches. For now, this is a placeholder.
-        Complex logic for splits/continuations should be carefully implemented
-        to ensure text1 and text2 remain accurate representations of the original blocks.
+        Post-process text matches. Currently a placeholder.
         """
-        # Example: could try to merge adjacent "modified" or "moved" blocks if they form a logical unit.
-        # For now, return as is to avoid introducing errors in text1/text2.
         logger.debug(f"Post-processing {len(matches)} text matches. Currently a passthrough.")
         return matches
 
@@ -236,23 +263,24 @@ class PdfCompare:
         """Match tables globally using content hash and similarity."""
         matches = []
         
-        # Decorate tables with original index and page for easier tracking
         tables1 = [(pg, tbl, idx) for idx, (pg, tbl) in enumerate(tables1_orig)]
         tables2 = [(pg, tbl, idx) for idx, (pg, tbl) in enumerate(tables2_orig)]
 
         tables2_by_hash = defaultdict(list)
         for pg, tbl, idx in tables2:
-            if "content_hash" in tbl:
+            if "content_hash" in tbl: # Should always be present due to _collect_tables optimization
                 tables2_by_hash[tbl["content_hash"]].append((pg, tbl, idx))
         
-        matched_t2_indices = set()
+        matched_t1_indices_exact = set()
+        matched_t2_indices_exact = set()
 
         # Pass 1: Exact matches by content_hash
         for pg1, t1, t1_idx in tables1:
             if t1.get("content_hash") in tables2_by_hash:
                 for pg2_cand, t2_cand, t2_idx_cand in tables2_by_hash[t1["content_hash"]]:
-                    if t2_idx_cand not in matched_t2_indices:
+                    if t2_idx_cand not in matched_t2_indices_exact:
                         status = "moved" if pg1 != pg2_cand else "matched"
+                        # For exact matches, diff_details can be generated here or deferred
                         diff_details = self._compare_individual_tables(t1, t2_cand)
                         matches.append({
                             "type": "table", "status": status, "score": 1.0,
@@ -260,73 +288,70 @@ class PdfCompare:
                             "page2": pg2_cand, "table2_content": t2_cand.get("content"), "table2_bbox": t2_cand.get("bbox"), "table2_id": t2_cand.get("table_id"),
                             "diff_html": diff_details["html"]
                         })
-                        matched_t2_indices.add(t2_idx_cand)
-                        tables1[t1_idx] = None # Mark as matched
+                        matched_t1_indices_exact.add(t1_idx)
+                        matched_t2_indices_exact.add(t2_idx_cand)
                         break 
         
-        tables1_remaining = [t for t in tables1 if t is not None]
+        tables1_remaining = [(i, t, idx) for i, (t, idx) in enumerate(tables1) if idx not in matched_t1_indices_exact]
+        tables2_remaining = [(i, t, idx) for i, (t, idx) in enumerate(tables2) if idx not in matched_t2_indices_exact]
 
-        # Pass 2: Similarity matches for remaining tables
-        # This part can be computationally expensive and could be parallelized
-        # For simplicity in this refactor, keeping it sequential.
-        # Consider using self._execute_parallel if performance is an issue.
 
-        temp_similarity_matches = []
-        for pg1, t1, t1_idx in tables1_remaining:
-            best_t2_match_info = None
-            highest_score = self.diff_threshold - 0.01
+        # Pass 2: Similarity matches for remaining tables - Parallelized
+        # Optimization 1: Generate tasks for parallel fuzzy matching
+        table_match_tasks = []
+        for t1_orig_idx, (pg1, t1, t1_idx) in tables1_remaining:
+            for t2_orig_idx, (pg2, t2, t2_idx) in tables2_remaining:
+                table_match_tasks.append(((pg1, t1, t1_idx), (pg2, t2, t2_idx)))
 
-            for pg2, t2, t2_idx in tables2:
-                if t2_idx in matched_t2_indices:
-                    continue
-                
-                # Ensure t1 and t2 are valid table dicts
-                if not isinstance(t1, dict) or not isinstance(t2, dict):
-                    logger.warning(f"Skipping invalid table objects for similarity: t1 type {type(t1)}, t2 type {type(t2)}")
-                    continue
-
-                score = self._calculate_table_similarity(t1, t2)
-                if score > highest_score:
-                    highest_score = score
-                    best_t2_match_info = (pg2, t2, t2_idx)
+        def _calculate_table_fuzzy_match_score(task_tuple):
+            (pg1, t1, t1_idx), (pg2, t2, t2_idx) = task_tuple
             
-            if best_t2_match_info:
-                pg2_match, t2_match, t2_match_idx = best_t2_match_info
-                temp_similarity_matches.append({
-                    "t1_info": (pg1, t1, t1_idx),
-                    "t2_info": (pg2_match, t2_match, t2_match_idx),
-                    "score": highest_score
-                })
-        
-        # Sort by score and resolve conflicts (greedy approach)
-        temp_similarity_matches.sort(key=lambda x: x["score"], reverse=True)
-        
-        matched_t1_indices_sim = set()
+            if not isinstance(t1, dict) or not isinstance(t2, dict):
+                # This case should ideally not happen if tables1/tables2 are correctly populated
+                return {"t1_info": (pg1, t1, t1_idx), "t2_info": (pg2, t2, t2_idx), "score": 0.0}
 
-        for match_info in temp_similarity_matches:
-            pg1, t1, t1_idx = match_info["t1_info"]
-            pg2, t2, t2_idx = match_info["t2_info"]
+            score = self._calculate_table_similarity(t1, t2)
+            return {
+                "t1_info": (pg1, t1, t1_idx),
+                "t2_info": (pg2, t2, t2_idx),
+                "score": score
+            }
 
-            if t1_idx in matched_t1_indices_sim or t2_idx in matched_t2_indices:
-                continue
+        if table_match_tasks:
+            logger.info(f"Executing {len(table_match_tasks)} fuzzy table match tasks in parallel.")
+            all_table_scores = self._execute_parallel(_calculate_table_fuzzy_match_score, table_match_tasks)
+            logger.info("Finished fuzzy table match tasks.")
 
-            status = "moved" if pg1 != pg2 else "modified"
-            diff_details = self._compare_individual_tables(t1, t2)
-            matches.append({
-                "type": "table", "status": status, "score": match_info["score"],
-                "page1": pg1, "table1_content": t1.get("content"), "table1_bbox": t1.get("bbox"), "table1_id": t1.get("table_id"),
-                "page2": pg2, "table2_content": t2.get("content"), "table2_bbox": t2.get("bbox"), "table2_id": t2.get("table_id"),
-                "diff_html": diff_details["html"]
-            })
-            matched_t1_indices_sim.add(t1_idx)
-            matched_t2_indices.add(t2_idx)
+            all_table_scores.sort(key=lambda x: x["score"], reverse=True)
+            
+            current_matched_t1_indices = set()
+            current_matched_t2_indices = set()
 
+            for result in all_table_scores:
+                score = result["score"]
+                pg1, t1, t1_idx = result["t1_info"]
+                pg2, t2, t2_idx = result["t2_info"]
+
+                if score < self.diff_threshold:
+                    continue
+
+                if (t1_idx not in matched_t1_indices_exact and t1_idx not in current_matched_t1_indices) and \
+                   (t2_idx not in matched_t2_indices_exact and t2_idx not in current_matched_t2_indices):
+                    
+                    status = "moved" if pg1 != pg2 else "modified"
+                    diff_details = self._compare_individual_tables(t1, t2)
+                    matches.append({
+                        "type": "table", "status": status, "score": score,
+                        "page1": pg1, "table1_content": t1.get("content"), "table1_bbox": t1.get("bbox"), "table1_id": t1.get("table_id"),
+                        "page2": pg2, "table2_content": t2.get("content"), "table2_bbox": t2.get("bbox"), "table2_id": t2.get("table_id"),
+                        "diff_html": diff_details["html"]
+                    })
+                    current_matched_t1_indices.add(t1_idx)
+                    current_matched_t2_indices.add(t2_idx)
 
         # Add tables only in pdf1 (deleted)
-        for t1_info in tables1_remaining:
-            if t1_info is None: continue # Should have been marked None if matched by hash
-            pg1, t1, t1_idx = t1_info
-            if t1_idx not in matched_t1_indices_sim:
+        for t1_orig_idx, (pg1, t1, t1_idx) in tables1_remaining:
+            if t1_idx not in matched_t1_indices_exact and t1_idx not in current_matched_t1_indices:
                 diff_details = self._compare_individual_tables(t1, None)
                 matches.append({
                     "type": "table", "status": "deleted", "score": 0.0,
@@ -336,8 +361,8 @@ class PdfCompare:
                 })
 
         # Add tables only in pdf2 (inserted)
-        for pg2, t2, t2_idx in tables2:
-            if t2_idx not in matched_t2_indices:
+        for t2_orig_idx, (pg2, t2, t2_idx) in tables2_remaining:
+            if t2_idx not in matched_t2_indices_exact and t2_idx not in current_matched_t2_indices:
                 diff_details = self._compare_individual_tables(None, t2)
                 matches.append({
                     "type": "table", "status": "inserted", "score": 0.0,
@@ -352,23 +377,20 @@ class PdfCompare:
         if not t1 or not t2 or not t1.get("content") or not t2.get("content"):
             return 0.0
         
-        # Use content hash for quick check
+        # Use content hash for quick check (already pre-computed)
         if t1.get("content_hash") and t2.get("content_hash") and t1["content_hash"] == t2["content_hash"]:
             return 1.0
 
         # Cache key using sorted hashes of table content strings
-        # This ensures that the order of t1, t2 doesn't affect the cache key
         content1_str = str(t1.get("content"))
         content2_str = str(t2.get("content"))
-        hash1 = hashlib.md5(content1_str.encode()).hexdigest()
-        hash2 = hashlib.md5(content2_str.encode()).hexdigest()
+        hash1 = hashlib.md5(content1_str.encode()).hexdigest() # This hashing can be avoided if content_hash is always available and used
+        hash2 = hashlib.md5(content2_str.encode()).hexdigest() # This hashing can be avoided if content_hash is always available and used
         cache_key_tuple = tuple(sorted((hash1, hash2)))
-
 
         if cache_key_tuple in self.table_comparison_cache:
             return self.table_comparison_cache[cache_key_tuple]
 
-        # Simplified similarity: average of structural and content similarity
         struct_sim = self._table_structure_similarity(t1.get("content"), t2.get("content"))
         content_sim = self._table_cell_content_similarity(t1.get("content"), t2.get("content"))
         
@@ -504,58 +526,51 @@ class PdfCompare:
         """
         organized_diffs = defaultdict(lambda: {"text_differences": [], "table_differences": []})
         
-        # Process text matches
-        # Keep track of text content that has been part of a "moved" operation to avoid duplication
-        moved_text_fingerprints_pdf1 = set() # Hashes of text1 content that moved
-        moved_text_fingerprints_pdf2 = set() # Hashes of text2 content that moved
+        # Optimization 6: Use existing hashes from block objects
+        moved_text_fingerprints_pdf1 = set() 
+        moved_text_fingerprints_pdf2 = set()
 
-        # First, identify all moved text to populate fingerprints
         for match in text_matches:
             if match["status"] == "moved":
-                if match.get("text1"):
-                    moved_text_fingerprints_pdf1.add(hashlib.md5(match["text1"].encode()).hexdigest())
-                if match.get("text2"):
-                     moved_text_fingerprints_pdf2.add(hashlib.md5(match["text2"].encode()).hexdigest())
+                if match.get("block1") and "hash" in match["block1"]: # Use block's pre-computed hash
+                    moved_text_fingerprints_pdf1.add(match["block1"]["hash"])
+                if match.get("block2") and "hash" in match["block2"]:
+                     moved_text_fingerprints_pdf2.add(match["block2"]["hash"])
         
         for match in text_matches:
             status = match["status"]
-            text1 = match.get("text1", "")
-            text2 = match.get("text2", "")
+            text1_hash = match.get("block1", {}).get("hash")
+            text2_hash = match.get("block2", {}).get("hash")
             page1 = match.get("page1")
             page2 = match.get("page2")
-            score = match.get("score", 0.0)
 
             # Skip deleted/inserted if they are part of an already accounted "moved" operation
-            if status == "deleted" and hashlib.md5(text1.encode()).hexdigest() in moved_text_fingerprints_pdf1:
+            if status == "deleted" and text1_hash in moved_text_fingerprints_pdf1:
                 continue
-            if status == "inserted" and hashlib.md5(text2.encode()).hexdigest() in moved_text_fingerprints_pdf2:
+            if status == "inserted" and text2_hash in moved_text_fingerprints_pdf2:
                 continue
 
             diff_item = {
-                "status": status, "score": score,
-                "text1": text1, "text2": text2,
+                "status": status, "score": match.get("score", 0.0),
+                "text1": match.get("text1", ""), "text2": match.get("text2", ""),
                 "page1": page1, "page2": page2,
                 "block1_bbox": match.get("block1", {}).get("bbox") if match.get("block1") else None,
                 "block2_bbox": match.get("block2", {}).get("bbox") if match.get("block2") else None,
             }
 
             if status == "moved":
-                # For moved items, they affect both source and destination pages in the report
                 if page1 is not None:
                     organized_diffs[page1]["text_differences"].append(diff_item)
-                if page2 is not None and page1 != page2: # Add to destination page if different
-                    # Create a corresponding entry for the destination page
-                    # The key is that the *same diff_item* (with both text1 and text2) is used
+                if page2 is not None and page1 != page2:
                     organized_diffs[page2]["text_differences"].append(diff_item)
             elif status == "deleted" and page1 is not None:
                 organized_diffs[page1]["text_differences"].append(diff_item)
             elif status == "inserted" and page2 is not None:
                 organized_diffs[page2]["text_differences"].append(diff_item)
-            elif status == "modified" and page1 is not None: # Modified items appear on their original page
+            elif status == "modified" and page1 is not None:
                  organized_diffs[page1]["text_differences"].append(diff_item)
-            elif status == "matched" and score < 1.0 and page1 is not None: # Similar items
+            elif status == "matched" and match.get("score", 1.0) < 1.0 and page1 is not None:
                  organized_diffs[page1]["text_differences"].append(diff_item)
-
 
         # Process table matches
         moved_table_fingerprints_pdf1 = set()
@@ -564,9 +579,13 @@ class PdfCompare:
         for match in table_matches:
             if match["status"] == "moved":
                 if match.get("table1_content"):
-                    moved_table_fingerprints_pdf1.add(hashlib.md5(str(match["table1_content"]).encode()).hexdigest())
+                    # Use the pre-computed hash if available from the table object
+                    # Fallback to re-hashing if not explicitly stored in match (though it should be)
+                    table1_hash = match.get("table1_content_hash", hashlib.md5(str(match["table1_content"]).encode()).hexdigest())
+                    moved_table_fingerprints_pdf1.add(table1_hash)
                 if match.get("table2_content"):
-                    moved_table_fingerprints_pdf2.add(hashlib.md5(str(match["table2_content"]).encode()).hexdigest())
+                    table2_hash = match.get("table2_content_hash", hashlib.md5(str(match["table2_content"]).encode()).hexdigest())
+                    moved_table_fingerprints_pdf2.add(table2_hash)
         
         for match in table_matches:
             status = match["status"]
@@ -574,20 +593,21 @@ class PdfCompare:
             page2 = match.get("page2")
             table1_content = match.get("table1_content")
             table2_content = match.get("table2_content")
+
+            table1_hash = match.get("table1_content_hash", hashlib.md5(str(table1_content).encode()).hexdigest() if table1_content else None)
+            table2_hash = match.get("table2_content_hash", hashlib.md5(str(table2_content).encode()).hexdigest() if table2_content else None)
             
-            if status == "deleted" and hashlib.md5(str(table1_content).encode()).hexdigest() in moved_table_fingerprints_pdf1:
+            if status == "deleted" and table1_hash in moved_table_fingerprints_pdf1:
                 continue
-            if status == "inserted" and hashlib.md5(str(table2_content).encode()).hexdigest() in moved_table_fingerprints_pdf2:
+            if status == "inserted" and table2_hash in moved_table_fingerprints_pdf2:
                 continue
 
-            # The diff_html is pre-generated by _compare_individual_tables
             diff_item = {
                 "status": status, "score": match.get("score", 0.0),
                 "page1": page1, "page2": page2,
                 "table1_id": match.get("table1_id"), "table2_id": match.get("table2_id"),
                 "table1_bbox": match.get("table1_bbox"), "table2_bbox": match.get("table2_bbox"),
                 "diff_html": match.get("diff_html", "")
-                # No need to store raw content here if diff_html is comprehensive
             }
 
             if status == "moved":
@@ -607,7 +627,6 @@ class PdfCompare:
 
         # Final sort for consistent output
         for page_num in organized_diffs:
-            # Sort by bounding box y-coordinate primarily, then x-coordinate
             organized_diffs[page_num]["text_differences"].sort(key=lambda d: (
                 d.get("block1_bbox")[1] if d.get("block1_bbox") else (d.get("block2_bbox")[1] if d.get("block2_bbox") else float('inf')),
                 d.get("block1_bbox")[0] if d.get("block1_bbox") else (d.get("block2_bbox")[0] if d.get("block2_bbox") else float('inf'))
@@ -618,4 +637,3 @@ class PdfCompare:
             ))
             
         return organized_diffs
-
