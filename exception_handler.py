@@ -1,117 +1,105 @@
-# app/exception_handlers/exception_handler.py
 import logging
 import traceback
-import sys
-from flask import jsonify, request, g # Import g
-from werkzeug.exceptions import HTTPException, default_exceptions
+from flask import jsonify, request
+from werkzeug.exceptions import HTTPException
 
 # Import our custom exceptions and error enum
 from exceptions import APIException, ComplaintException, ComplaintError
 
-# Configure logging (Best practice: configure this in your app's __init__.py or config)
-logger = logging.getLogger(__name__) # Use the module name as logger name
+logger = logging.getLogger(__name__)
 
-def generate_request_id():
-    """Generates a unique request ID (e.g., UUID) for tracing."""
-    import uuid
-    return str(uuid.uuid4())
+def get_conversation_id():
+    """
+    Safely retrieves the conversationID from the incoming request's JSON payload.
+    """
+    if request.is_json and request.json:
+        # Check for 'conversationID' (from spec) or 'conversation_id' as a fallback.
+        return request.json.get('conversationID') or request.json.get('conversation_id')
+    return 'N/A' # Default if not found or if the request is not JSON.
 
 def register_exception_handlers(app):
     """
     Registers all global exception handlers with the Flask application.
     """
 
-    @app.before_request
-    def before_request():
-        """Attach a unique request ID to Flask's global context (g)."""
-        g.request_id = generate_request_id()
-        logger.debug(f"Request ID generated: {g.request_id} for path: {request.path}")
-
-
-    @app.errorhandler(ComplaintException) # Catch your specific ComplaintException first
+    @app.errorhandler(ComplaintException)
     def handle_complaint_exception(e: ComplaintException):
         """
-        Handles custom ComplaintException instances.
-        These are errors explicitly raised within your chatbot workflow logic.
+        Handles custom ComplaintException instances, which are explicitly raised
+        within the application logic.
         """
-        request_id = getattr(g, 'request_id', 'N/A') # Access request_id from g
+        conversation_id = get_conversation_id()
         log_message = (
-            f"[{request_id}] ComplaintException Caught: Code={e.error_code}, "
-            f"HTTP={e.http_status}, UserMessage='{e.error_enum.default_message}', "
-            f"DevMessage='{e.error_enum.developer_message}'"
+            f"[{conversation_id}] ComplaintException Caught: Code={e.error_code}, "
+            f"HTTP={e.http_status}, Description='{e.error_enum.description}'"
         )
 
         if e.details:
             log_message += f", Details='{e.details}'"
-        if e.original_exception:
-            # Log the full traceback of the original exception for critical server errors
-            if e.http_status >= 500: # Log full traceback for server errors
-                logger.exception(f"{log_message}\nOriginal Exception: {e.original_exception}")
-            else: # For client errors (e.g., 400), just log the original exception message/details
-                logger.warning(f"{log_message}\nOriginal Exception Message: {e.original_exception}")
+
+        if e.http_status >= 500 and e.original_exception:
+            logger.exception(f"{log_message}\nOriginal Exception: {e.original_exception}")
         else:
             logger.warning(log_message)
 
-        response = jsonify(e.to_json(request_id))
+        response = jsonify(e.to_json(conversation_id=conversation_id))
         response.status_code = e.http_status
         return response
 
     @app.errorhandler(HTTPException)
     def handle_http_exception(e: HTTPException):
         """
-        Handles standard Werkzeug/Flask HTTP exceptions (e.g., 404, 400, 500).
-        These are often raised by Flask itself or extensions.
+        Handles standard Werkzeug/Flask HTTP exceptions (e.g., 404, 400, 500)
+        and maps them to the appropriate ComplaintError response.
         """
-        request_id = getattr(g, 'request_id', 'N/A') # Access request_id from g
-        error_code = f"HTTP{e.code}" if e.code else "HTTP500"
-        developer_message = e.description if e.description else "No specific HTTP error description."
-        user_message = "An API error occurred. Please try again." # Generic for HTTP errors by default
-
-        # Use GENERIC_API_ERROR for all unmapped HTTP exceptions.
-        # The provided ComplaintError enum does not contain specific mappings for
-        # 400, 401, 403, 404, 429.
-        if e.code in [400, 401, 403, 404, 429, 500]:
-            user_message = ComplaintError.GENERIC_API_ERROR.default_message
-            error_code = ComplaintError.GENERIC_API_ERROR.code
+        conversation_id = get_conversation_id()
         
+        if e.code == 400:
+            error_enum = ComplaintError.BAD_REQUEST
+        else:
+            error_enum = ComplaintError.SERVICE_TEMPORARILY_DOWN
+
         logger.warning(
-            f"[{request_id}] HTTPException Caught: Code={error_code}, "
-            f"HTTP={e.code}, UserMessage='{user_message}', "
-            f"DevMessage='{developer_message}'"
+            f"[{conversation_id}] HTTPException Caught: HTTP={e.code}, Mapped to Code={error_enum.code}. "
+            f"Original Description: {e.description}"
         )
 
+        generic_chat_message = "Complaint Capture agent is temporarily unavailable"
+
         response_payload = {
-            "status": "error",
-            "code": error_code,
-            "message": user_message,
-            "request_id": request_id
+            "chatResponseText": generic_chat_message,
+            "errorResponse": {
+                "code": error_enum.code,
+                "desc": error_enum.description,
+                "conversationID": conversation_id
+            }
         }
+
         response = jsonify(response_payload)
-        response.status_code = e.code if e.code else 500
+        response.status_code = error_enum.http_status
         return response
 
     @app.errorhandler(Exception)
     def handle_generic_exception(e: Exception):
         """
-        Handles ALL uncaught exceptions (the ultimate fallback).
-        This catches anything not specifically handled by other error handlers.
+        Handles ALL uncaught exceptions as a final fallback.
         """
-        request_id = getattr(g, 'request_id', 'N/A') # Access request_id from g
-        error_enum = ComplaintError.GENERIC_API_ERROR
+        conversation_id = get_conversation_id()
+        error_enum = ComplaintError.SERVICE_TEMPORARILY_DOWN
 
-        # Log the full traceback for all uncaught exceptions
-        logger.exception(
-            f"[{request_id}] Uncaught Exception: "
-            f"UserMessage='{error_enum.default_message}', "
-            f"DevMessage='{e}'" # Use 'e' to capture the exception message
-        )
-
+        logger.exception(f"[{conversation_id}] Uncaught Exception. Mapping to {error_enum.code}. Details: {e}")
+        
+        generic_chat_message = "Complaint Capture agent is temporarily unavailable"
+        
         response_payload = {
-            "status": "error",
-            "code": error_enum.code,
-            "message": error_enum.default_message, # Always show generic message to user
-            "request_id": request_id
+            "chatResponseText": generic_chat_message,
+            "errorResponse": {
+                "code": error_enum.code,
+                "desc": error_enum.description,
+                "conversationID": conversation_id
+            }
         }
+
         response = jsonify(response_payload)
-        response.status_code = error_enum.http_status # Always 500 for generic server error
+        response.status_code = error_enum.http_status
         return response
