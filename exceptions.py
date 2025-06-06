@@ -1,20 +1,20 @@
-from enum import Enum, auto
+from enum import Enum
 
 class ComplaintError(Enum):
-  
-    GENERIC_API_ERROR = ("CHAT0001", 500, "An unexpected error occurred. Please try again later.", "An unexpected error occurred on the server.")
-    MODEL_UNAVAILABLE = ("C-101", 442, "AI model processing is not available.", "The AI model service is currently unreachable or down.")
-    CUSTOMER_SEARCH_UNAVAILABLE = ("C-102", 442, "Customer search model processing is not available.", "The customer search service is not responding.")
-    HR_DATA_UNAVAILABLE = ("C-103", 442, "HR data processing is not available.", "The HR data processing service encountered an issue.")
-    SUBMISSION_FAILED = ("C-104", 442, "Complaint submission process failed/unavailable.", "Failed to submit the complaint due to an internal processing error.")
-    SERVICE_TEMPORARILY_DOWN = ("COMPL1005", 500, "Failed to submit the complaint. Please try again.", "Complaint submission process failed.")
-    # Add more as you identify specific error/exception conditions within our flow
+    """
+    Defines standardized error codes, HTTP statuses, and descriptions
+    based on the project's OpenAPI and Jira specifications.
+    """
+    SERVICE_TEMPORARILY_DOWN = ("EC-100", 500, "Complaint AI temporarily unavailable")
+    BAD_REQUEST = ("EC-101", 400, "Bad request")
+    AI_MODEL_PROCESSING_NOT_AVAILABLE = ("EC-102", 422, "AI model processing not available")
+    AI_MODEL_PROCESSING_ERROR = ("EC-103", 422, "Error occurred during AI model processing")
+    SUBMISSION_PROCESSING_FAILED = ("EC-104", 422, "Complaints submission processing failed/unavailable")
 
-    def __init__(self, code, http_status, default_message, developer_message):
+    def __init__(self, code, http_status, description):
         self.code = code
         self.http_status = http_status
-        self.default_message = default_message
-        self.developer_message = developer_message
+        self.description = description
 
 class APIException(Exception):
     """
@@ -22,10 +22,10 @@ class APIException(Exception):
     Inherits from Python's built-in Exception.
     """
     def __init__(self, error_enum: ComplaintError, details: str = None, original_exception: Exception = None):
-        super().__init__(error_enum.developer_message)
+        super().__init__(error_enum.description)
         self.error_enum = error_enum
         self.details = details
-        self.original_exception = original_exception # Store the original exception for logging
+        self.original_exception = original_exception
 
     @property
     def http_status(self) -> int:
@@ -35,22 +35,28 @@ class APIException(Exception):
     def error_code(self) -> str:
         return self.error_enum.code
 
-    def to_json(self, request_id: str = None) -> dict:
+    def to_json(self, conversation_id: str = None) -> dict:
         """
-        Generates a standardized JSON response for the chatbot client.
+        Generates a standardized JSON response for the client, conforming to the OpenAPI spec.
+        Includes conversation_id in the errorResponse object.
         """
-        response_payload = {
-            "status": "error",
-            "code": self.error_code,
-            "message": self.error_enum.default_message,
-        }
-        if request_id:
-            response_payload["request_id"] = request_id # Important for tracing
+        generic_chat_message = "Complaint Capture agent is temporarily unavailable"
 
+        response_payload = {
+            "chatResponseText": generic_chat_message,
+            "errorResponse": {
+                "code": self.error_code,
+                "desc": self.error_enum.description,
+                "conversationID": conversation_id
+            }
+        }
         return response_payload
 
-# Specific custom exceptions for clarity in code, inheriting from APIException
-class ComplaintException(APIException): # This aligns with your current usage
+class ComplaintException(APIException):
+    """
+    Specific custom exception for chatbot workflow errors.
+    Ensures that only a valid ComplaintError enum member is used.
+    """
     def __init__(self, error_enum: ComplaintError, details: str = None, original_exception: Exception = None):
         if not isinstance(error_enum, ComplaintError):
             raise TypeError("ComplaintException must be initialized with a ComplaintError enum member.")
