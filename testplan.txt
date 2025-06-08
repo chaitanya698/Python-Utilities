@@ -1,0 +1,355 @@
+AI Chatbot Test Plan: Bank Complaint Capture
+1. Introduction
+Application Under Test (AUT): AI Chatbot for Bank Branch Agents to capture customer complaints.
+
+Purpose: This document outlines the comprehensive testing strategy, scope, objectives, and resource allocation for the AI Chatbot application. It integrates recommended testing frameworks and tools for both the User Interface (UI) and Backend API components.
+
+Target Audience: Development Team, Quality Assurance (QA) Team, Product Owners, Project Managers, and Key Stakeholders.
+
+2. Scope of Testing
+The testing initiative will meticulously cover all critical components and functionalities, ensuring a robust and reliable application.
+
+2.1. Frontend (Adaptive Cards, React, Microsoft Copilot)
+UI Rendering & Responsiveness: Verify the accurate display, layout, and responsiveness of the chatbot interface across supported screen sizes and browsers (primarily Edge, Chrome, Firefox within the Microsoft Copilot environment).
+
+User Input Handling: Test various input methods, including text and potential voice-to-text functionality (if enabled by Copilot), ensuring their correct processing by the chatbot.
+
+Chatbot Response Display: Validate the correct rendering of chatbot text responses, structured Adaptive Card elements (such as buttons, input fields, and images), and dynamically generated content.
+
+Interactive Elements: Thoroughly test the functionality of all interactive UI components within Adaptive Cards, including buttons, dropdowns, and other input mechanisms.
+
+Microsoft Copilot Integration: Ensure seamless embedding and interaction of the chatbot within the Microsoft Copilot environment, including verification of authentication and authorization flows via Copilot.
+
+Error Handling (UI): Confirm the display of clear, user-friendly error messages for client-side validation failures or issues related to backend communication.
+
+Accessibility: (If required by project specifications) Conduct testing to ensure compliance with Web Content Accessibility Guidelines (WCAG) for all visual and interactive elements.
+
+2.2. Backend (Python Flask API, Langchain)
+API Endpoint Functionality: Perform comprehensive validation of all Flask API endpoints, focusing on request/response schemas, HTTP methods, status codes, and data integrity.
+
+Complaint Capture Logic: Verify the accurate capture, parsing, and persistence of all complaint-related data, including customer details, complaint type, detailed description, and timestamps.
+
+Natural Language Understanding (NLU) & Intent Recognition: Test the Langchain model's accuracy in identifying and categorizing user intent (e.g., "billing issue," "service complaint," "account inquiry").
+
+Entity Extraction: Validate the precise extraction of relevant entities from user utterances (e.g., "credit card number," "transaction ID," "branch name," "date").
+
+Conversational Flow & Context Management: Test the chatbot's ability to maintain context across multiple turns, ask relevant clarifying questions, and effectively guide the agent through the complaint capture process.
+
+Integration with Core Systems: (If applicable) Verify data flow and the successful logging of captured complaints into any integrated downstream banking systems.
+
+Server-Side Error Handling & Logging: Ensure robust error handling, the provision of meaningful error responses to the frontend, and comprehensive logging for effective debugging and auditing.
+
+Security: Conduct testing for API authentication and authorization mechanisms, perform input validation to prevent common web vulnerabilities (such as SQL injection and Cross-Site Scripting - XSS), and verify data encryption both in transit and at rest.
+
+Performance: Measure API response times, evaluate throughput under varying loads, and assess overall system stability.
+
+2.3. Integration Points (End-to-End)
+Seamless Communication: Verify uninterrupted and accurate communication between the UI (Adaptive Cards via Copilot) and the Flask API.
+
+Data Consistency: Ensure data consistency and integrity from the point of UI input through to backend storage and subsequent retrieval.
+
+System Robustness: Assess the overall resilience and stability of the system under various real-world scenarios.
+
+3. Test Objectives
+The primary objectives of this testing effort are:
+
+To validate the AI Chatbot's ability to accurately and efficiently capture customer complaints through the bank agent interface.
+
+To ensure the backend Flask API reliably processes, stores, and manages complaint data.
+
+To verify the Langchain module's NLU, intent recognition, and entity extraction accuracy, along with its capability to manage conversational flows.
+
+To confirm the seamless and robust integration and communication between the frontend (React/Adaptive Cards/Copilot) and the Python Flask/Langchain backend.
+
+To identify and resolve all functional, performance, security, and usability defects prior to production deployment.
+
+To ensure a positive, intuitive, and efficient user experience for bank branch agents.
+
+4. Test Phases & Recommended Frameworks/Tools
+This section details the specific testing phases and the frameworks and tools recommended for each, building upon our architectural and expertise considerations.
+
+4.1. Unit Testing (Developer & QA Collaboration)
+Objective: Validate individual components, functions, and modules in isolation to ensure they perform as expected.
+
+Scope: Individual Python Flask functions, specific Langchain modules (e.g., NLU sub-components, data processing utilities), and React components.
+
+Tools:
+
+Python: pytest (for Flask backend and Langchain logic).
+
+React: Jest and React Testing Library (primarily driven by the development team).
+
+Strategy: Developers hold primary responsibility for writing and maintaining unit tests. The QA team will review test coverage and focus on ensuring critical components have adequate unit test validation.
+
+4.2. API Testing (Backend Validation)
+Objective: Thoroughly test the functionality, reliability, performance, and security of all Python Flask API endpoints.
+
+Scope: All RESTful API endpoints exposed by the Flask backend that handle operations such as complaint submission, retrieval, and status updates.
+
+Recommended Framework: Pytest + Requests
+
+Why: This combination leverages your strong Python expertise, provides maximum flexibility and programmatic control, integrates seamlessly with your Flask backend, and offers robust assertion capabilities and test organization.
+
+Approach:
+
+Test Case Design: Develop comprehensive test cases for each API endpoint, covering:
+
+Happy Paths: Valid requests resulting in expected successful responses (e.g., HTTP 200 OK).
+
+Negative Scenarios: Invalid inputs, missing required fields, incorrect data types, attempts at unauthorized access, and requests for non-existent resources.
+
+Edge Cases: Testing with boundary values, special characters, and empty payloads (where applicable) to ensure robustness.
+
+Data Validation: Verify that server-side validation rules are correctly enforced and appropriate error responses are returned.
+
+Implementation: Write Python test scripts using pytest and the requests library to send HTTP requests to your Flask API.
+
+Assertions: Assert on HTTP status codes, the structure and data within JSON response bodies, headers, and confirm that data is correctly persisted in the backend database.
+
+Test Data Management: Utilize Pytest fixtures to automate the setup and teardown of test data in the backend database for each test run, ensuring a clean and repeatable testing environment.
+
+Schema Validation: Consider using a library such as jsonschema within your pytest tests to programmatically validate the structure and types of your API response schemas.
+
+Alternative: Tavern (This is a strong alternative if a more declarative, YAML-based approach is preferred for defining API tests, while still benefiting from pytest as the underlying test runner).
+
+4.3. AI/ML Testing (Langchain Logic Validation)
+Objective: Verify the accuracy, intelligence, and conversational flow of the Langchain module, ensuring correct intent recognition, entity extraction, and appropriate responses.
+
+Scope: The core Langchain logic responsible for Natural Language Understanding (NLU), dialogue management, information retrieval, and response generation within the chatbot.
+
+Recommended Framework: Custom Python Scripts / Pytest with Mocking
+
+Why: This approach allows for direct interaction with the Langchain codebase, enabling precise testing of AI model outputs and conversational logic in isolation from actual network calls or database interactions.
+
+Approach:
+
+Input Data Preparation: Create comprehensive datasets of diverse user utterances to serve as test inputs. This should include:
+
+Typical complaint descriptions (happy path scenarios).
+
+Variations in phrasing for the same intended meaning or intent.
+
+Ambiguous or unclear inputs that require clarification.
+
+Out-of-scope queries (e.g., an agent asking a personal question unrelated to complaint capture).
+
+Inputs containing common typos or slang to test robustness.
+
+Intent Recognition Tests: For each expected user intent (e.g., "billing_dispute," "branch_feedback," "fraud_report"), provide multiple variations of user inputs and assert that the Langchain model correctly identifies the corresponding intent.
+
+Entity Extraction Tests: For inputs known to contain specific entities (e.g., account numbers, dates, customer names, product names), assert that Langchain accurately extracts and categorizes these entities.
+
+Conversational Flow Tests: Design and automate multi-turn scenarios to verify the chatbot's ability to maintain context across turns, ask appropriate clarifying questions, and correctly guide the agent through the complete complaint capture process.
+
+Response Generation Quality: Assert the relevance, accuracy, completeness, and appropriateness of the chatbot's generated responses based on the identified intent and extracted entities.
+
+Mocking: Utilize unittest.mock or pytest-mock to effectively mock any external dependencies (e.g., database calls, external APIs for knowledge retrieval) that Langchain might interact with. This ensures that you are testing only the Langchain logic's behavior and not potential issues with external systems.
+
+4.4. UI (Frontend) Testing (End-to-End User Experience)
+Objective: Validate the user interface, interaction flows, and visual correctness of the Adaptive Cards within the React and Microsoft Copilot environment. The goal is to ensure a smooth, intuitive, and efficient agent experience.
+
+Scope: All visual elements, interactive components, forms, and conversational displays rendered to the bank branch agent.
+
+Recommended Framework: Playwright (Python)
+
+Why: Playwright offers excellent multi-browser support, a strong Python API, built-in auto-waiting for elements, robust selectors, and powerful debugging features like tracing. These capabilities make it an ideal choice for stable and reliable UI automation of modern web applications.
+
+Approach:
+
+Page Object Model (POM): Implement the Page Object Model design pattern for improved test maintainability and reusability. This involves abstracting UI elements and interactions into reusable page objects.
+
+Scenario-Based Testing: Automate comprehensive end-to-end scenarios that accurately mimic how a bank agent would typically capture a complaint using the chatbot. This includes:
+
+Launching the Microsoft Copilot interface and initiating the chatbot.
+
+Entering complaint details through text input fields and selecting options from Adaptive Cards.
+
+Verifying dynamic updates to Adaptive Cards based on user input or chatbot responses.
+
+Submitting the complaint and verifying the display of success messages.
+
+Testing the correct display of error messages for both client-side validation failures and backend communication issues.
+
+Verifying accessibility features and responsiveness across different browser viewports and devices.
+
+Assertions: Assert on key UI aspects such as element visibility, text content, attribute values, and overall UI state changes.
+
+Screenshot/Video Capture: Configure Playwright to automatically capture screenshots or videos on test failures, significantly aiding in quick debugging and issue reproduction.
+
+Integration: Use pytest to orchestrate Playwright tests, leveraging pytest fixtures for efficient browser setup and teardown.
+
+4.5. Integration Testing (E2E API + UI Flow)
+Objective: Verify seamless communication, data consistency, and functional flow between the UI, Flask API, and Langchain across complete user journeys.
+
+Scope: End-to-end user journeys that span across frontend interactions (driven by Playwright) and backend API calls involving Langchain processing.
+
+Recommended Framework:
+
+Primary: Playwright (Python) (for driving comprehensive end-to-end UI scenarios that naturally interact with and validate the underlying API and Langchain components).
+
+Support: Pytest + Requests (for setting up specific backend states before UI interactions or for directly verifying data persistence/changes in the backend after UI actions).
+
+Approach:
+
+Design Integrated Scenarios: Create detailed test scenarios that simulate a complete complaint capture process, starting from the agent's input in the UI and culminating in the complaint being successfully logged in the backend database.
+
+UI Interaction Simulation: Utilize Playwright to simulate all necessary UI interactions a bank agent would perform.
+
+Backend Verification: Optionally, within your Playwright tests or as separate pytest helper functions, use the requests library to directly interact with the backend API. This allows for verification of data persistence in the database or validation of data fetched by other APIs after specific UI actions.
+
+4.6. Performance Testing
+Objective: Assess the system's responsiveness, stability, and scalability under various user loads. This will ensure the application can handle expected and peak usage effectively.
+
+Scope: Focus primarily on the Flask API endpoints, as they represent the main point of interaction and potential bottleneck for concurrent users.
+
+Recommended Tool: Locust
+
+Why: As a Python-based tool, Locust allows you to write load test scripts in pure Python code, which aligns perfectly with your existing expertise and the backend's language. It is highly scalable, supports distributed testing, and provides real-time performance metrics through a user-friendly web UI.
+
+Approach:
+
+Define User Scenarios: Model typical bank agent complaint submission flows, including variations in complaint sizes and types, to simulate realistic user behavior.
+
+Load Profile Definition: Clearly define the number of concurrent users, the ramp-up rate (how quickly users are added), and the total duration of the load test.
+
+Scripting: Write Python scripts within Locust to simulate concurrent agents making API calls to your Flask backend (e.g., simulating POST requests to /api/submit_complaint with varying payloads).
+
+Monitoring: Continuously monitor key performance indicators (KPIs) during the test, including API response times, error rates, and backend resource utilization (CPU, memory, database connections).
+
+Analysis: Analyze the collected data to identify potential bottlenecks, determine the system's capacity limits, and recommend performance optimizations.
+
+Alternative: Apache JMeter (A robust, industry-standard tool if a GUI-based, more traditional approach with extensive protocol support and reporting is preferred, often used by dedicated performance engineering teams).
+
+4.7. Security Testing
+Objective: Proactively identify and mitigate security vulnerabilities across the application stack to protect sensitive bank data and user privacy.
+
+Scope: The Flask API, the backend Python code, and potentially frontend interactions if client-side vulnerabilities (e.g., insecure local storage, XSS) are possible.
+
+Recommended Tools:
+
+Static Application Security Testing (SAST): Bandit (specifically for Python Flask/Langchain code).
+
+Approach: Integrate Bandit into your Continuous Integration/Continuous Delivery (CI/CD) pipeline to automatically scan your Python codebase for common security issues (e.g., potential SQL injection points, XSS vulnerabilities, insecure deserialization) early in the development cycle.
+
+Dynamic Application Security Testing (DAST): OWASP ZAP (Zed Attack Proxy).
+
+Approach: Use OWASP ZAP to passively (monitoring traffic) or actively (attacking the application with various payloads) scan your running Flask API for vulnerabilities. ZAP can also be integrated into your CI/CD pipeline for automated security scans.
+
+Manual Penetration Testing: (Crucial for high-security and financial applications like banking) Engage qualified security experts to conduct manual penetration testing. This often uncovers complex, business-logic-related vulnerabilities that automated tools might miss.
+
+Consideration: Rigorously implement and test API authentication mechanisms (e.g., OAuth, JWT) and authorization controls (e.g., Role-Based Access Control - RBAC) to ensure only authorized agents can perform specific actions.
+
+4.8. Usability Testing
+Objective: Evaluate the ease of use, efficiency, and overall satisfaction of the chatbot interface for bank branch agents in a realistic setting.
+
+Scope: The entire agent interaction flow with the chatbot, from initiation to complaint capture completion.
+
+Approach:
+
+User Sessions: Conduct moderated or unmoderated user sessions with actual bank branch agents.
+
+Task-Based Scenarios: Provide participants with realistic tasks (e.g., "Capture a complaint about a double charge on a credit card," "Submit feedback about long wait times at the branch," "Escalate a complex issue").
+
+Observation & Feedback: Carefully observe agent behavior, noting any pain points, confusion, or efficiency issues. Gather qualitative feedback through structured questionnaires, direct interviews, and debriefing sessions.
+
+Improvement Identification: Identify areas for improvement in the conversational design, the Adaptive Cards' UI layout, clarity of chatbot responses, and the overall agent experience.
+
+5. Test Environment
+A multi-stage test environment strategy is crucial for effective testing:
+
+Development Environment: Used by developers for unit testing and initial API/UI component testing on local machines.
+
+QA Environment: A dedicated, stable environment that closely mirrors the production setup. This environment will be used for all functional, integration, performance, and automated security testing.
+
+Staging/UAT Environment: A production-like environment with realistic, potentially anonymized, data. This is where User Acceptance Testing (UAT) will be conducted by business stakeholders.
+
+Production Environment: Used for post-deployment smoke testing and continuous monitoring to ensure ongoing stability and performance.
+
+6. Test Data Management
+Effective test data management is vital for comprehensive and repeatable testing:
+
+Realistic & Anonymized Data: Develop synthetic and/or anonymized realistic test data sets for customer profiles, various complaint types, and diverse complaint scenarios.
+
+Edge Case Data: Create specific test data to cover edge cases, such as very long complaint descriptions, inputs containing special characters, incomplete information, and boundary values.
+
+Automated Setup/Teardown: Implement automated test data setup and teardown scripts (e.g., using Pytest fixtures for API tests or dedicated Python scripts) to ensure a clean and consistent state for each test run.
+
+AI/ML Datasets: For AI/ML testing, curate diverse and representative datasets of user utterances covering all expected intents and entities to train and test the Langchain model's accuracy effectively.
+
+7. Roles and Responsibilities
+Clearly defined roles ensure efficient test execution and collaboration:
+
+QA Lead: Responsible for the overall test strategy, test plan development, resource allocation, risk management, and comprehensive test reporting.
+
+Automation Testers (Python/Java): Develop and maintain automated test scripts for API testing (Pytest/Requests), UI testing (Playwright), and AI/ML specific testing (Pytest with Mocking).
+
+Manual Testers: Conduct exploratory testing, validate complex conversational flows that are hard to automate, perform usability testing, and conduct accessibility checks.
+
+Developers: Accountable for unit testing their code, performing bug fixes, and providing technical support to the QA team during various testing phases.
+
+Product Owner: Defines and clarifies business requirements, reviews and approves test cases, and actively participates in User Acceptance Testing.
+
+DevOps Engineer: Manages the test environments, maintains the Continuous Integration/Continuous Delivery (CI/CD) pipelines, and ensures deployment readiness.
+
+8. Entry and Exit Criteria
+Establishing clear criteria for each testing phase is crucial for managing quality and project progression:
+
+8.1. Entry Criteria (for each major test phase)
+All relevant requirements are finalized and signed off by stakeholders.
+
+Development of the features under test is complete, and the code is deployed to the designated test environment.
+
+The test environment is stable, properly configured, and accessible for testing.
+
+All required test data is available, correctly prepared, and accessible.
+
+Critical and high-priority bugs from preceding development or testing cycles are resolved.
+
+8.2. Exit Criteria (for the overall testing cycle)
+All critical and high-priority test cases have been executed with a pass rate of ≥ 95%.
+
+There are no open critical or high-priority defects remaining.
+
+All defined performance benchmarks (e.g., API response times, throughput) have been met.
+
+All identified security vulnerabilities have been addressed or formally accepted with a mitigation plan.
+
+User Acceptance Testing (UAT) has been formally signed off by business stakeholders.
+
+A comprehensive Test Summary Report has been prepared, reviewed, and approved.
+
+9. Reporting and Metrics
+Regular reporting and tracking of key metrics are essential for visibility and informed decision-making:
+
+Test Progress Reports: Daily or weekly updates on test execution status (including planned, executed, passed, failed, blocked, and skipped counts), defect trends, and automation coverage.
+
+Defect Reports: Detailed bug reports, including severity, priority, clear steps to reproduce, expected vs. actual results, managed through a defect tracking system (e.g., Jira).
+
+Coverage Metrics: Tracking of test case coverage (against requirements), code coverage (from unit tests), and overall automation coverage.
+
+Performance Reports: Detailed reports on response times, throughput, and error rates generated from tools like Locust or JMeter.
+
+Test Summary Report: A final, comprehensive report submitted at the conclusion of the overall testing cycle, summarizing the testing scope, activities performed, key findings, identified risks, and final recommendations.
+
+10. Risks and Mitigation
+Proactive identification and mitigation of risks are critical for successful project delivery:
+
+Risk: Ambiguous or frequently changing AI/ML conversational requirements leading to rework.
+
+Mitigation: Involve QA early in the conversation design process, create living documentation for conversational flows with clear examples, and implement version control for AI models.
+
+Risk: AI model drift or performance degradation over time in production.
+
+Mitigation: Implement continuous model evaluation in production with automated checks, set up real-time monitoring for key AI metrics (e.g., intent accuracy, response relevance), and establish a clear plan for regular model retraining and re-testing.
+
+Risk: Environmental instability (e.g., flaky test environments, inconsistent data) leading to unreliable or flaky tests.
+
+Mitigation: Implement robust environment setup and teardown procedures, utilize dedicated and isolated QA environments, and invest in Infrastructure as Code (IaC) for consistent environment provisioning.
+
+Risk: Inadequate or unrealistic test data for complex scenarios impacting test effectiveness.
+
+Mitigation: Prioritize test data management, invest in automated test data generation tools, and actively collaborate with product owners to define and acquire truly realistic test scenarios and data.
+
+Risk: Integration complexities with the Microsoft Copilot environment impacting end-to-end functionality.
+
+Mitigation: Conduct early and continuous integration testing, maintain clear and frequent communication with the Copilot integration team, and leverage Playwright for comprehensive end-to-end automation within the Copilot interface.
