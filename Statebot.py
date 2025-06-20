@@ -1,384 +1,186 @@
-# chat_workflow.py
-
 import logging
-# Assuming DataLoaderService is imported from another module.
-# from services import DataLoaderService 
+import datetime
+from typing import Dict, Any, List
+from dataclasses import dataclass, field
+from enum import Enum
 
+from langgraph.graph import StateGraph, END
+
+# --- Setup Logger ---
 logger = logging.getLogger(__name__)
 
-class ChatWorkflow:
-    """
-    Manages the state and transitions of a complaint chat workflow.
-    """
-    def __init__(self, channel_app, conversation_id):
-        """
-        Initializes the workflow instance.
-        """
-        self.current_state = "complaint_initiation"
-        self.channel_app = channel_app
-        self.conversation_id = conversation_id
-        self.prompt_template_id = None
-        self.chat_prev_question = ""
-        self.chat_prev_data = {}
-        # As seen in your code, the number of revision attempts is set here.
-        self.chat_clarification_revise_attempts = 5
+# --- Enums and State Definition ---
 
-    def transition(self, action, user_input):
+class RequestType(Enum):
+    """
+    Enumeration for the types of requests the orchestrator can handle.
+    """
+    COMPLAINT_CAPTURE = "ComplaintCapture"
+    GENERAL = "General"
+
+@dataclass
+class WorkflowState:
+    """
+    Dataclass representing the state of the workflow.
+    This state is passed between nodes in the graph.
+    """
+    request_type: str
+    channel_id: str
+    conversation_id: str
+    data_elements: Dict[str, Any]
+    chat_text: str
+    action: str
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    errors: List[str] = field(default_factory=list)
+
+
+# --- Orchestrator Class ---
+
+class ComplaintOrchestrator:
+    """
+    Orchestrates the processing of user requests using a stateful graph (LangGraph).
+    It validates, routes, and processes requests based on their type.
+    """
+
+    def __init__(self):
         """
-        Generic method to call the appropriate 'process' method based on the current state.
+        Initializes the orchestrator by building and compiling the workflow graph.
+        """
+        self.workflow = self._build_workflow()
+
+    def _validate_request(self, state: WorkflowState) -> WorkflowState:
+        """
+        Validates the incoming request for required fields.
+        Populates the 'errors' list in the state if validation fails.
+        """
+        logger.info(f"Validating request for conversation {state.conversation_id}")
+        if not state.channel_id or not state.conversation_id:
+            state.errors.append("Missing required fields: channel_id or conversation_id")
+        return state
+
+    def _preprocess_complaint(self, state: WorkflowState) -> WorkflowState:
+        """
+        Performs preprocessing specific to complaint capture requests.
+        Enriches metadata and can transform data elements.
+        """
+        logger.info(f"Preprocessing complaint for conversation {state.conversation_id}")
+        
+        # This node should only be reached if there are no validation errors
+        if not state.errors:
+            state.metadata.update({
+                "processed_timestamp": str(datetime.datetime.now()),
+                "request_type": state.request_type
+            })
+
+            # Example of transforming data_elements from list to dict if necessary
+            if isinstance(state.data_elements, list):
+                data_dict = {}
+                for item in state.data_elements:
+                    if isinstance(item, dict) and 'name' in item and 'value' in item:
+                        data_dict[item['name']] = item['value']
+                state.data_elements = data_dict
+                
+        return state
+
+    def _handle_error(self, state: WorkflowState) -> WorkflowState:
+        """
+        Handles states that have accumulated errors during the workflow.
+        """
+        logger.error(f"Error in workflow for conversation {state.conversation_id}: {state.errors}")
+        # Error handling logic can be expanded here (e.g., notifying a monitoring system)
+        return state
+
+    def _handle_general(self, state: WorkflowState) -> WorkflowState:
+        """
+        Handles general, non-complaint-related requests.
+        """
+        logger.info(f"Handling general request for conversation {state.conversation_id}")
+        # Logic for general conversation can be added here
+        return state
+
+    def _route_request(self, state: WorkflowState) -> str:
+        """
+        Determines the next step in the workflow based on the current state.
+        This is the main conditional branching logic for the graph.
+        """
+        if state.errors:
+            return "error_handler"
+        if state.request_type == RequestType.COMPLAINT_CAPTURE.value:
+            return "process_complaint"
+        return "general_handler"
+
+    def _build_workflow(self):
+        """
+        Builds and compiles the workflow graph using StateGraph.
+        """
+        workflow = StateGraph(WorkflowState)
+
+        # Add nodes
+        workflow.add_node("validate", self._validate_request)
+        workflow.add_node("process_complaint", self._preprocess_complaint)
+        workflow.add_node("error_handler", self._handle_error)
+        workflow.add_node("general_handler", self._handle_general)
+
+        # Define edges
+        workflow.set_entry_point("validate")
+
+        # Add conditional edges based on the output of the router function
+        workflow.add_conditional_edges(
+            source="validate",
+            path=self._route_request,
+            path_map={
+                "process_complaint": "process_complaint",
+                "error_handler": "error_handler",
+                "general_handler": "general_handler"
+            }
+        )
+        
+        # Set finish points for the graph
+        workflow.add_edge("process_complaint", END)
+        workflow.add_edge("error_handler", END)
+        workflow.add_edge("general_handler", END)
+
+        return workflow.compile()
+
+    def process_request(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Main entry point for processing requests. It initializes the state,
+        invokes the workflow, and formats the final response.
         """
         try:
-            method_name = f"process_{self.current_state}"
-            method = getattr(self, method_name)
-            return method(action, user_input)
-        except AttributeError:
-            logger.error(f"No process method found for state: {self.current_state}")
-            raise
-        except Exception as e:
-            logger.error(f"Error processing state {self.current_state}: {e}")
-            raise e
+            initial_state = WorkflowState(
+                request_type=request_data.get("requestType", RequestType.GENERAL.value),
+                channel_id=request_data.get("channelID"),
+                conversation_id=request_data.get("conversationID"),
+                data_elements=request_data.get("dataElements", {}),
+                chat_text=request_data.get("chatText", ""),
+                action=request_data.get("action", "")
+            )
 
-    # =================================================================================
-    # PROCESS METHODS (State to Transition Mapping)
-    # Assembled from your images.
-    # =================================================================================
+            # Invoke the workflow with the initial state
+            final_state = self.workflow.invoke(initial_state)
 
-    def process_complaint_initiation(self, action, user_input):
-        return transition_complaint_initiation(self, action, user_input)
+            if final_state.errors:
+                return {
+                    "status": "error",
+                    "errors": final_state.errors
+                }
 
-    def process_when_complaint_received(self, action, user_input):
-        return transition_when_complaint_received(self, action, user_input)
-        
-    def process_how_complaint_received(self, action, user_input):
-        return transition_how_complaint_received(self, action, user_input)
-
-    def process_account_number_form(self, action, user_input):
-        return transition_account_number_form(self, action, user_input)
-
-    def process_account_number_question(self, action, user_input):
-        return transition_account_number_question(self, action, user_input)
-
-    def process_application_number_question(self, action, user_input):
-        return transition_application_number_question(self, action, user_input)
-
-    def process_reference_number_question(self, action, user_input):
-        return transition_reference_number_question(self, action, user_input)
-
-    def process_complaint_name(self, action, user_input):
-        return transition_complaint_name(self, action, user_input)
-
-    def process_complaint_description(self, action, user_input):
-        return transition_complaint_description(self, action, user_input)
-
-    def process_clarification_in_progress(self, action, user_input):
-        return transition_clarification_in_progress(self, action, user_input)
-
-    def process_clarification_summary(self, action, user_input):
-        return transition_clarification_summary(self, action, user_input)
-
-    def process_clarification_revise(self, action, user_input):
-        return transition_clarification_revise(self, action, user_input)
-
-    def process_clarification_revise_question(self, action, user_input):
-        return transition_clarification_revise_question(self, action, user_input)
-        
-    def process_classification_summary(self, action, user_input):
-        return transition_classification_summary(self, action, user_input)
-    
-    def process_unauthorized_account_question(self, action, user_input):
-        return transition_unauthorized_account_question(self, action, user_input)
-        
-    def process_unauthorized_description(self, action, user_input):
-        return transition_unauthorized_description(self, action, user_input)
-
-    def process_preferred_communication_form(self, action, user_input):
-        return transition_preferred_communication_form(self, action, user_input)
-
-    def process_preferred_communication_question(self, action, user_input):
-        return transition_preferred_communication_question(self, action, user_input)
-
-    def process_create_complaint(self, action, user_input):
-        return transition_create_complaint(self, action, user_input)
-        
-    def process_complaint_not_associated(self, action, user_input):
-        return transition_complaint_not_associated(self, action, user_input)
-
-
-    # =================================================================================
-    # HELPER METHODS
-    # Assembled from your images and our previous discussion.
-    # =================================================================================
-    
-    def get_current_state_data(self):
-        return DataLoaderService.get_wf_by_action_name(self.channel_app, self.current_state)
-        
-    def get_current_question(self):
-        state_data = self.get_current_state_data()
-        wf_question_id = state_data.get('chat_question_id', None)
-        return DataLoaderService.get_chat_question_by_id(wf_question_id)
-
-    def get_prev_question(self):
-        return self.chat_prev_data.get('chat_question', None)
-        
-    def get_state_id(self):
-        state_data = self.get_current_state_data()
-        if state_data:
-            return state_data["chat_workflow_action_id"]
-        return None
-
-    def get_state_data(self, state_id):
-        return DataLoaderService.get_workflow_action_by_id(state_id)
-
-    def get_current_state(self, state_id):
-        state_data = self.get_state_data(state_id)
-        if state_data:
-            return state_data['action_name']
-        return self.current_state
-
-    def get_prompt_template_id(self, state_id):
-        state_data = self.get_state_data(state_id)
-        if state_data:
-            return state_data.get('prompt_template_id', None)
-        return None
-
-    # +++ NEW METHOD +++
-    # This is the new method to fetch the summary from the database.
-    def get_latest_summary_from_history(self):
-        """
-        Fetches the latest summary text from the chat_history table for the current conversation.
-        """
-        logger.info(f"Fetching latest summary from history for conversation_id: {self.conversation_id}")
-        try:
-            # This requires a new method in your DataLoaderService (see previous response for the SQL).
-            summary_record = DataLoaderService.get_latest_summary_record(self.conversation_id)
-
-            if summary_record:
-                summary_text = summary_record.get('CHAT_QUESTION')
-                # Remove the "Final_Summary: " prefix from the text.
-                if summary_text and summary_text.startswith("Final_Summary: "):
-                    return summary_text.replace("Final_Summary: ", "", 1).strip()
-                return summary_text
+            # Return the successfully processed state
+            return {
+                "status": "success",
+                "channelID": final_state.channel_id,
+                "conversationID": final_state.conversation_id,
+                "dataElements": final_state.data_elements,
+                "chatText": final_state.chat_text,
+                "action": final_state.action,
+                "metadata": final_state.metadata
+            }
             
-            logger.warning("No summary record was found in the chat history.")
-            return None
         except Exception as e:
-            logger.error(f"An error occurred while fetching summary from chat history: {e}")
-            return None
+            logger.error(f"Critical error in workflow processing: {e}", exc_info=True)
+            return {
+                "status": "error",
+                "errors": [f"An unexpected server error occurred: {str(e)}"]
+            }
 
-
-
-# chat_workflow_service.py
-
-import json
-import logging
-# Assuming these helper functions are defined elsewhere in your project.
-# from utils import get_attempts
-
-logger = logging.getLogger(__name__)
-
-
-def populate_response_message(instance, message=None):
-    """
-    Creates the standard response object to be sent back to the user.
-    """
-    question_data = instance.get_current_question()
-    question = message if message else question_data.get("question_text")
-    logger.info(msg="Current question is: %s", question)
-    metadata = question_data.get("question_metadata", {})
-    response = json.loads(metadata)
-    response["chatResponseText"] = question
-
-    # The logic to remove the 'Modify' button was removed from this generic function
-    # and moved into 'transition_clarification_summary' where there is more context.
-
-    return response
-
-
-def transition_clarification_summary(instance, action, user_input):
-    """
-    Handles the state transition after a summary has been presented to the user.
-    The user can either 'continue' or 'modify'.
-    """
-    action_lower = action.lower() if action else ''
-
-    if action_lower == 'continue':
-        logger.info("User selected 'continue' after clarification summary.")
-        instance.current_state = "classification_summary"
-        return populate_response_message(instance)
-
-    elif action_lower == 'modify':
-        logger.info("User selected 'modify', composing clarify/revise question.")
-        try:
-            remaining_attempts = get_attempts(instance)
-            if remaining_attempts > 0:
-                instance.current_state = "clarification_revise_question"
-
-                # Enhancement: Fetch summary from history with a fallback.
-                summary_to_revise = ""
-                try:
-                    summary_to_revise = instance.get_latest_summary_from_history()
-                    if not summary_to_revise:
-                        logger.warning("Could not get summary from history. Falling back to chat_prev_data.")
-                        summary_to_revise = instance.chat_prev_data.get("summary", "Could not retrieve the summary to revise.")
-                except Exception as e:
-                    logger.error(f"An error occurred while fetching the summary: {e}")
-                    summary_to_revise = "Error: Could not retrieve the summary for revision."
-
-                question_text = instance.get_current_question().get("question_text", "")
-                question = question_text.replace("{}", str(remaining_attempts))
-                
-                response = populate_response_message(instance, message=question)
-                
-                # Add the fetched summary to the response payload for the frontend.
-                response['data'] = response.get('data', {})
-                response['data']['summary_to_revise'] = summary_to_revise
-
-                # Enhancement: Remove 'Modify' button if this is the last attempt.
-                if remaining_attempts == 1 and "actions" in response:
-                    logger.info("Last modification attempt. Removing 'Modify' button for the next turn.")
-                    response["actions"] = [
-                        act for act in response["actions"]
-                        if not (act.get("actionType") == "Button" and act.get("label") == "Modify")
-                    ]
-                
-                attempt_counter = instance.chat_clarification_revise_attempts - remaining_attempts
-                response['attemptCounter'] = attempt_counter
-                return response
-            else:
-                # No attempts left, proceed to the next state.
-                logger.warning("No remaining attempts for modification.")
-                instance.current_state = "classification_summary"
-                return populate_response_message(instance)
-        except Exception as e:
-            logger.exception(f"An unexpected error occurred in transition_clarification_summary 'modify' action: {e}")
-            instance.current_state = "classification_summary"
-            return populate_response_message(instance)
-    else:
-        logger.warning(f"Invalid action received: '{action}'. Defaulting to 'clarification_summary'.")
-        instance.current_state = "clarification_summary"
-        return populate_response_message(instance)
-
-
-# services/data_loader.py
-
-import logging
-from sqlalchemy import create_engine, text, exc
-
-logger = logging.getLogger(__name__)
-
-# ==============================================================================
-#  DATABASE ENGINE SETUP
-# ==============================================================================
-# This setup should be done once when your application starts.
-#
-# IMPORTANT: Replace the placeholder below with your actual database 
-# connection string.
-#
-# --- Examples ---
-# PostgreSQL: "postgresql+psycopg2://user:password@hostname:5432/database_name"
-# MySQL:      "mysql+mysqlconnector://user:password@hostname:3306/database_name"
-# MS SQL:     "mssql+pyodbc://user:password@your_dsn"
-# ------------------------------------------------------------------------------
-try:
-    DATABASE_URL = "postgresql+psycopg2://user:password@localhost/space_redress_db"
-    engine = create_engine(DATABASE_URL)
-except ImportError:
-    logger.critical("Database driver not installed. Please install a library like 'psycopg2-binary'.")
-    engine = None
-except Exception as e:
-    logger.critical(f"Failed to create database engine: {e}")
-    engine = None
-
-
-class DataLoaderService:
-    """
-    A service class to handle all database interactions.
-    All methods are static, so you don't need to instantiate the class.
-    """
-
-    @staticmethod
-    def get_latest_summary_record(conversation_id: str):
-        """
-        Connects to the database and fetches the most recent summary record
-        from the chat history for a given conversation.
-
-        Args:
-            conversation_id: The unique identifier for the conversation.
-
-        Returns:
-            A dictionary-like Row object representing the database record if found,
-            otherwise returns None.
-        """
-        if not engine:
-            logger.error("Database engine is not configured or available.")
-            return None
-
-        # The SQL query uses a named parameter ':conversation_id' for safety.
-        # It finds records where the question indicates it's a summary,
-        # orders them to get the latest one first, and takes only that one.
-        query = text("""
-            SELECT
-                CHAT_QUESTION
-            FROM
-                space_redress.galaxy_chat_history
-            WHERE
-                chat_conversation_id = :conversation_id
-                AND CHAT_QUESTION LIKE 'Final_Summary:%'
-            ORDER BY
-                CHAT_MSG_ORDER DESC
-            LIMIT 1
-        """)
-
-        try:
-            # The 'with' statement ensures the database connection is
-            # automatically closed even if errors occur.
-            with engine.connect() as connection:
-                # Execute the query, safely passing the conversation_id.
-                result = connection.execute(query, {"conversation_id": conversation_id})
-                
-                # .first() fetches the first row of the result or None if empty.
-                record = result.first()
-                
-                if record:
-                    logger.info(f"Successfully found latest summary for conversation '{conversation_id}'.")
-                    # The 'record' is a SQLAlchemy Row object. It can be accessed by
-                    # index or by column name, making it compatible with the
-                    # .get('CHAT_QUESTION') call in your workflow class.
-                    return record
-                else:
-                    logger.warning(f"No summary record found in history for conversation '{conversation_id}'.")
-                    return None
-
-        except exc.SQLAlchemyError as e:
-            # Catches database-related errors (e.g., connection issues, syntax errors).
-            logger.error(f"A database error occurred while fetching latest summary: {e}")
-            return None
-        except Exception as e:
-            # Catches other unexpected errors.
-            logger.error(f"An unexpected error occurred in get_latest_summary_record: {e}")
-            return None
-
-    # ==============================================================================
-    #  PLACEHOLDERS FOR YOUR OTHER DATALOADER METHODS
-    # ==============================================================================
-
-    @staticmethod
-    def get_wf_by_action_name(channel_app: str, current_state: str):
-        # Your implementation for this function would go here.
-        logger.debug(f"Called get_wf_by_action_name for state: {current_state}")
-        # ... database logic ...
-        return {"chat_question_id": 123} # Example return
-
-    @staticmethod
-    def get_chat_question_by_id(wf_question_id: int):
-        # Your implementation for this function would go here.
-        logger.debug(f"Called get_chat_question_by_id for ID: {wf_question_id}")
-        # ... database logic ...
-        return {"question_text": "This is a question from the DB.", "question_metadata": "{}"} # Example return
-
-    @staticmethod
-    def get_workflow_action_by_id(state_id: int):
-        # Your implementation for this function would go here.
-        logger.debug(f"Called get_workflow_action_by_id for ID: {state_id}")
-        # ... database logic ...
-        return {"action_name": "some_action", "prompt_template_id": 456} # Example return
