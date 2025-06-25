@@ -1,0 +1,101 @@
+Expected Result
+The API should process the request successfully, call the HR Data and Customer Search service, and respond to the UI with the greeting message and the 'When was the complaint received?' question.
+The API should process the request successfully and respond to the UI with the greeting message and the 'When was the complaint received?' question.
+The API should return an error message indicating that a required field is missing.
+The API should return an error message indicating that a required field is missing.
+The API should return a specific error message for an empty request.
+The API successfully calls the external services, and the customer name is verified.
+The API proceeds without making a call to the ECPR service.
+The API should handle the error gracefully, log the issue, and potentially return a specific error message to the UI.
+The API should handle the error gracefully, log the issue, and potentially return a specific error message to the UI.
+The API sends the correct prompt to the LLM and receives the clarification question.
+The API sends the revised summary to the LLM for the final classification.
+The API should handle the error gracefully, perhaps with a predefined response or by escalating the issue.
+The API should log the malformed response and handle the situation without crashing, possibly by asking the user to try again.
+All the key-value pairs from the initial request are correctly persisted in the conversation database.
+The final summary, complaint type, and other resolution details are accurately stored in the conversation database.
+The API should handle the database error, log it, and potentially inform the user of a system issue.
+All relevant data points are correctly stored under the correct Qname keys in the database.
+The 'EscalatedPreferredFollowUp' or 'LOBEscalatedPreferredFollowUp' Qname is updated with the new phone number.
+The system should either reject the input and re-prompt the user or store it with a flag indicating it's unverified, without causing an error in the Qname parsing.
+A new complaint record is created with all the captured data.
+A unique Interaction ID is generated and associated with the new complaint record.
+The API should handle the error, log the failure, and inform the user that the complaint could not be submitted, advising them to try again later.
+The complete conversation log and complaint details are published to the CEODS system.
+The API should log the publishing failure. The system should have a retry mechanism or a way to flag the record for later publishing.
+An audit log entry is created tracking the change, including who made it and when.
+The start and end timestamps are accurately recorded and stored with the conversation data.
+The complaint process should still complete successfully, and the failure to log should be recorded as a system error.
+An alert is generated and sent to the appropriate system or personnel.
+No alerts are generated.
+The API returns a message like 'We are currently experiencing technical difficulties. Please try again later.' instead of a generic server error.
+The system should not crash. It should log the detailed stack trace and return a generic, non-technical error message to the user.
+The API should accept the input and process it successfully, storing the full length.
+The API should return a 400 Bad Request error with a message indicating the field exceeds the maximum length.
+The API should accept and store the characters correctly without errors (sanitization should prevent security issues).
+The API should sanitize the input, storing it as plain text (e.g., "&lt;script&gt;alert('XSS')&lt;/script&gt;") and not execute the script.
+The API should use parameterized queries, preventing the injection. The input should be stored as a literal string.
+On the third modification, the API proceeds to the final summary step. The 'Modify' button should no longer be an option.
+The API should either handle the large input or return a 400 error if it exceeds a defined limit.
+The LLM should ideally ignore the injection attempt and classify the complaint based on the original context. The API should handle any classification.
+The name should be stored and retrieved correctly without character encoding issues.
+All three account numbers should be stored correctly, likely in a delimited string or a JSON array within the Qname.
+The Qname 'ComplaintSpecificallyRequestedNoContact' is set to 'Yes', and no further contact options are presented.
+The UI should present "555-123-4567" as the preferred phone option.
+The 'EscalatedPreferredFollowUp' Qname is updated with the new phone number.
+The 'LOBEscalatedPreferredFollowUp' Qname is updated with the new email.
+The API should return a validation error to the UI asking for a valid 10-digit phone number.
+The API should return a validation error to the UI asking for a valid email format.
+The API should reject the request with a state validation error, e.g., "Invalid request sequence."
+The API should process one request and reject the other as a stale or conflicting request to prevent race conditions.
+The API should return an error indicating the session has expired and the user must start over.
+The API should handle this scenario gracefully. It might return an error, or the logic may specify to pick the first match. The expected behavior needs clarification.
+The API should proceed but log the discrepancy for audit purposes.
+The API call to the LLM for final classification should include: Customer Name, Complaint Summary, Resolution Note, Complaint Type Explanation, and Use Case.
+The API should correctly parse this classification and store it.
+The API skips steps 10-13 and proceeds directly to storing the provided AccountNumber/ReferenceID.
+The API sends the prompt "Please provide the Application number associated with the complaint." to the UI.
+The API should log an error about the missing mapping but continue processing the rest of the data without crashing.
+The system should log the initial failure, and the record should be successfully published on the retry attempt. No data is lost.
+An alert should be triggered, same as it would for "fraud".
+The average response time for each step in the flow should be within the defined SLA (e.g., < 500ms).
+The API should remain stable, and response times should degrade gracefully, not exponentially. No 5xx errors should occur.
+The API should process and store all account numbers without significant performance degradation or errors.
+The API should return a 405 Method Not Allowed error.
+The API should return a 405 Method Not Allowed error.
+The API should return a 405 Method Not Allowed error.
+The API should default to the system's default language (e.g., 'en-US') and log the unsupported preference.
+The API should return a 400 Bad Request error indicating a JSON parsing failure.
+The API should trigger the final complaint creation and publishing steps (51 onwards).
+The API should call the 'prompt category' service and save Primary/Secondary problem/reason categories.
+The API should handle this as an error, log it, and potentially fall back to a default or 'Unclassified' state.
+In the database, the corresponding value should be stored as a number/integer, not a string "12345" (if schema dictates).
+Every audit entry for that session should be linked by a common session/user ID.
+The complaint submission should succeed, and the failure to send the alert should be recorded as a non-critical error.
+The API should process the request successfully, treating the null field as if it were absent.
+Expected: API returns an error if keys are case-sensitive. OR Expected: API processes the request successfully if keys are case-insensitive.
+The API should correctly parse this and store it as '1112223333'.
+The API should correctly validate and store the full email address.
+The API should return an error indicating the complaint is already finalized and cannot be modified.
+The note sent back to the UI should say "You have 2 remaining attempts to modify the summary."
+The API should send a single button template with 'Continue' after receiving the final revised summary.
+The API should log the issue and return a specific error to the UI indicating the employee ID is invalid.
+The value is stored correctly without any delimiters.
+The API should return a validation error to the UI, as the account number is mandatory for this complaint type.
+API responds to UI with "Please enter the potentially unauthorized account numbers provided by the complainant."
+The API should prioritize the explicitly provided account number for the complaint context.
+The API correctly maps this to the corresponding Qname and proceeds.
+The API correctly maps this to the corresponding Qname and proceeds.
+The request is processed successfully.
+The API returns a 401 Unauthorized error.
+The API should ignore the unexpected field and process the known fields successfully.
+The API should handle this, either by truncating data if allowed or by logging an error if the payload exceeds CEODS limits. It should not crash.
+Any temporary data stored in the conversation DB that is not needed for the final record should be purged.
+The Qname 'EscalatedPreferredFollowUp' or 'LOBEscalatedPreferredFollowUp' is updated with the value 'No specific method requested'.
+The API should correctly parse all three distinct components from the LLM response.
+The API should handle this gracefully, storing the available data and leaving the missing component blank, without crashing.
+The API calls the LLM for the clarification prompt and sends it to the UI.
+The API should wait for the response and continue the flow. Overall request time will be high, which should be noted in logs.
+The values are saved to the 'ProductCategory' and 'AssociatedProduct' Qnames.
+The API should log the 404 error and return a relevant 500-level error to the UI.
+The API should log the 403 permissions error and return a relevant 500-level error to the UI.
