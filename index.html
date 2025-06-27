@@ -121,20 +121,56 @@
                             <h4 class="font-semibold text-gray-700">get_epics (step 4)</h4>
                             <p class="text-sm text-gray-500 mb-3">Parameters: {'project_key': 'PQRZW'}</p>
                             <div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
-                                <!-- Example Epic Card -->
-                                <div class="bg-gray-50 p-3 rounded-md border">
-                                    <p class="font-medium text-sm text-gray-800">PQRZW-11987: Complaints - Technology Change Inventory</p>
-                                    <p class="text-xs text-gray-500">ServiceDesk | ECHODCR-128107</p>
+                                <!-- Expandable Epic Card 1 -->
+                                <div class="bg-gray-50 rounded-md border">
+                                    <div class="p-3 cursor-pointer flex justify-between items-center" onclick="toggleCard(1)">
+                                        <div>
+                                            <p class="font-medium text-sm text-gray-800">PQRZW-11987: Complaints - Technology Change Inventory</p>
+                                            <p class="text-xs text-gray-500">ServiceDesk | ECHODCR-128107</p>
+                                        </div>
+                                        <svg id="arrow-1" class="w-4 h-4 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                                    </div>
+                                    <div id="card-content-1" class="hidden p-3 border-t border-gray-200">
+                                        <ul class="text-xs text-gray-700 space-y-1">
+                                            <li><strong>Status:</strong> In Progress</li>
+                                            <li><strong>Assignee:</strong> Jane Doe</li>
+                                            <li><strong>Summary:</strong> Epic to track the technology change inventory for all complaint-related systems.</li>
+                                        </ul>
+                                    </div>
                                 </div>
-                                 <!-- Example Epic Card -->
-                                <div class="bg-gray-50 p-3 rounded-md border">
-                                    <p class="font-medium text-sm text-gray-800">PQRZW-11883: Procedure and Reporting - Manual EAP Referrals</p>
-                                    <p class="text-xs text-gray-500">ServiceDesk | ECHODCR-128107</p>
+                                 <!-- Expandable Epic Card 2 -->
+                                <div class="bg-gray-50 rounded-md border">
+                                    <div class="p-3 cursor-pointer flex justify-between items-center" onclick="toggleCard(2)">
+                                        <div>
+                                            <p class="font-medium text-sm text-gray-800">PQRZW-11883: Procedure and Reporting - Manual EAP Referrals</p>
+                                            <p class="text-xs text-gray-500">ServiceDesk | ECHODCR-128107</p>
+                                        </div>
+                                        <svg id="arrow-2" class="w-4 h-4 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                                    </div>
+                                    <div id="card-content-2" class="hidden p-3 border-t border-gray-200">
+                                        <ul class="text-xs text-gray-700 space-y-1">
+                                            <li><strong>Status:</strong> Done</li>
+                                            <li><strong>Assignee:</strong> John Smith</li>
+                                            <li><strong>Summary:</strong> Improve the manual EAP referral process and reporting capabilities.</li>
+                                        </ul>
+                                    </div>
                                 </div>
-                                 <!-- Example Epic Card -->
-                                <div class="bg-gray-50 p-3 rounded-md border">
-                                    <p class="font-medium text-sm text-gray-800">PQRZW-11824: Scope Discovery for Cloud Proxy Application Migration</p>
-                                    <p class="text-xs text-gray-500">ServiceDesk | ECHODCR-124161</p>
+                                 <!-- Expandable Epic Card 3 -->
+                                <div class="bg-gray-50 rounded-md border">
+                                    <div class="p-3 cursor-pointer flex justify-between items-center" onclick="toggleCard(3)">
+                                        <div>
+                                            <p class="font-medium text-sm text-gray-800">PQRZW-11824: Scope Discovery for Cloud Proxy Application Migration</p>
+                                            <p class="text-xs text-gray-500">ServiceDesk | ECHODCR-124161</p>
+                                        </div>
+                                        <svg id="arrow-3" class="w-4 h-4 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                                    </div>
+                                    <div id="card-content-3" class="hidden p-3 border-t border-gray-200">
+                                        <ul class="text-xs text-gray-700 space-y-1">
+                                            <li><strong>Status:</strong> To Do</li>
+                                            <li><strong>Assignee:</strong> Unassigned</li>
+                                            <li><strong>Summary:</strong> Initial discovery phase for migrating the Cloud Proxy Application.</li>
+                                        </ul>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -150,9 +186,20 @@
                     </div>
                 </div>
             </section>
-
         </div>
     </main>
 
+    <!-- JavaScript for Expandable Cards -->
+    <script>
+        function toggleCard(cardIndex) {
+            const content = document.getElementById(`card-content-${cardIndex}`);
+            const arrow = document.getElementById(`arrow-${cardIndex}`);
+            
+            if (content && arrow) {
+                content.classList.toggle('hidden');
+                arrow.classList.toggle('rotate-180');
+            }
+        }
+    </script>
 </body>
 </html>
