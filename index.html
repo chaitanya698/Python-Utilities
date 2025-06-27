@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jira Architecture Impact Analysis</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+            background-color: #0E1117;
+            color: #FAFAFA;
+            margin: 0;
+            display: flex;
+        }
+        .sidebar {
+            width: 300px;
+            background-color: #0E1117;
+            padding: 2rem;
+            border-right: 1px solid #262730;
+            height: 100vh;
+        }
+        .sidebar h2 {
+            font-size: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        .sidebar label {
+            font-size: 0.875rem;
+            color: #A0A0A0;
+            margin-bottom: 0.5rem;
+            display: block;
+        }
+        .sidebar select, .sidebar input[type="text"] {
+            width: 100%;
+            padding: 0.5rem;
+            background-color: #262730;
+            border: 1px solid #262730;
+            color: #FAFAFA;
+            border-radius: 0.25rem;
+            margin-bottom: 1rem;
+        }
+        .sidebar button {
+            width: 100%;
+            padding: 0.5rem;
+            background-color: #FF4B4B;
+            border: none;
+            color: white;
+            border-radius: 0.25rem;
+            cursor: pointer;
+            margin-bottom: 1rem;
+        }
+        .sidebar button:hover {
+            background-color: #FF6B6B;
+        }
+        .sidebar a {
+            color: #A0A0A0;
+            text-decoration: none;
+            display: block;
+            margin-top: 0.5rem;
+            font-size: 0.875rem;
+        }
+        .sidebar a:hover {
+            color: #FAFAFA;
+        }
+        .main-content {
+            flex-grow: 1;
+            padding: 2rem;
+            position: relative;
+        }
+        .main-content .deploy-button {
+            position: absolute;
+            top: 2rem;
+            right: 2rem;
+            background-color: #0E1117;
+            color: #FAFAFA;
+            border: 1px solid #FAFAFA;
+            padding: 0.5rem 1rem;
+            border-radius: 0.25rem;
+            cursor: pointer;
+        }
+        .analysis-section {
+            background-color: #262730;
+            padding: 1rem;
+            border-radius: 0.25rem;
+            margin-bottom: 1rem;
+        }
+        .analysis-section h3 {
+            font-weight: normal;
+            font-size: 1rem;
+            border-bottom: 1px solid #4A4A4A;
+            padding-bottom: 0.5rem;
+            margin-top: 0;
+        }
+        .analysis-section p {
+            font-family: monospace;
+            color: #A0A0A0;
+        }
+        .epic-section {
+            margin-top: 2rem;
+        }
+        .epic-section-header {
+            background-color: #262730;
+            padding: 1rem;
+            border-radius: 0.25rem;
+            margin-bottom: 1rem;
+        }
+        .epic-section-header h3 {
+            font-weight: normal;
+            font-size: 1rem;
+            margin: 0;
+        }
+        .epic-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 1rem;
+        }
+        .epic-card {
+            background-color: #262730;
+            padding: 1rem;
+            border-radius: 0.25rem;
+        }
+        .epic-card select {
+            width: 100%;
+            padding: 0.5rem;
+            background-color: #0E1117;
+            border: 1px solid #4A4A4A;
+            color: #FAFAFA;
+            border-radius: 0.25rem;
+        }
+        .epic-card p {
+            font-size: 0.875rem;
+            color: #A0A0A0;
+            margin-top: 0.5rem;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="sidebar">
+        <h2>JIRA tool selection</h2>
+        
+        <label for="select-tool">select a tool</label>
+        <select id="select-tool" name="tool">
+            <option value="get_epics">get_epics</option>
+        </select>
+        
+        <h3>tool parameters</h3>
+        
+        <label for="project-key">project_key</label>
+        <input type="text" id="project-key" name="project_key" value="PQKZW">
+        
+        <button type="button">Run tool</button>
+        
+        <button type="button" class="secondary">Download Architecture Impact Report (PDF)</button>
+        
+        <a href="#">Visit - Product architecture practice</a>
+        <a href="#">Visit - Agile Transformation - Architecture Impact</a>
+    </div>
+
+    <div class="main-content">
+        <button class="deploy-button">Deploy</button>
+
+        <div class="analysis-section">
+            <h3>Jira Architecture Impact Analysis (step 4)</h3>
+            <p>Parameters: {'story_count': 1}</p>
+            <hr>
+            <p>Analyzed 0 Jira stories</p>
+        </div>
+
+        <div class="analysis-section">
+            <h3>Jira Architecture Impact Analysis (step 4)</h3>
+            <p>Parameters: {'story_count': 1}</p>
+            <hr>
+            <p>Analyzed 0 Jira stories</p>
+        </div>
+
+        <div class="epic-section">
+            <div class="epic-section-header">
+                <h3>get_epics (step 4)</h3>
+                <p>Parameters: {'project_key': 'PQKZW'}</p>
+            </div>
+            <div class="epic-grid">
+                <div class="epic-card">
+                    <select>
+                        <option>PQKZW-11981: Complaints - Technology Change Inventory (TCI) -...</option>
+                    </select>
+                    <p>PQKZW-973 - Remove and Replace Elastic APM with Splunk Observability Cloud (SPLKOC) in Non-Production and Production | ServiceDesk | ECMDCK-128107</p>
+                </div>
+                <div class="epic-card">
+                    <select>
+                        <option>PQKZW-11880: Procedure and Reporting - Manual KAP Referrals | ...</option>
+                    </select>
+                    <p>ServiceDesk | ECMDCK-128107</p>
+                </div>
+                <div class="epic-card">
+                    <select>
+                        <option>PQKZW-11981: Complaints - Technology Change Inventory (TCI) -...</option>
+                    </select>
+                    <p>PQKZW-1024 - Scope Discovery for Cloud Proxy Application Migration | ServiceDesk | ECMDCK-124161</p>
+                </div>
+                <div class="epic-card">
+                    <select>
+                        <option>PQKZW-11978: Q3 2025 Complaints - Technology Change Inventory ...</option>
+                    </select>
+                    <p>(TCI) - PKZW-989: DC Entry Criteria Validation - App Platform Team | ServiceDesk | ECMDCK-124161</p>
+                </div>
+                <div class="epic-card">
+                    <select>
+                        <option>PQKZW-11972: Q3 2025 Complaints - Technology Change Inventory ...</option>
+                    </select>
+                    <p>(TCI) - PKZW-1035 - Splunk Cloud Migration | ServiceDesk | ECMDCK-118576</p>
+                </div>
+                 <div class="epic-card">
+                    <select>
+                        <option>PQKZW-11976: Q3 2025 Complaints - Technology Change Inventory ...</option>
+                    </select>
+                    <p>(TCI) - PKZW-930 - DC Entry Criteria validation - App Engineering Team | ServiceDesk | ECMDCK-124161</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
