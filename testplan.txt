@@ -1,8 +1,4 @@
-Of course\! As an AI assistant, I can help you with that. Here is the modified code for `generate.py` that skips differences for moved text items matching the pattern "Confidential Month Year | Text".
 
-I have added logic to the `_prepare_diffs_for_render` method to identify and skip these specific text blocks from the comparison report.
-
-```python
 import os
 import re
 import logging
@@ -16,7 +12,7 @@ logger.setLevel(logging.INFO)
 
 class ReportGenerator:
 
-    SIMILARITY_THRESHOLD_FOR_PAIRING = 0.60  # Lowered threshold for more flexible matching
+    SIMILARITY_THRESHOLD_FOR_PAIRING = 0.50  # Lowered threshold for more flexible matching
     # Constants for cleaning up the report by hiding minor table differences
     HIDE_MODIFIED_TABLE_SIMILARITY_THRESHOLD = 0.98
     HIDE_MATCHED_TABLE_SIMILARITY_THRESHOLD = 1.0
@@ -673,4 +669,3 @@ document.addEventListener('DOMContentLoaded', function () {
 </body>
 </html>
 """
-```
