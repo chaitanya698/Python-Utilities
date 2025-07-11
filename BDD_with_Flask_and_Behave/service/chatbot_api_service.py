@@ -1,10 +1,10 @@
-
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from utils.config_loader import get_config
 from utils.logger_config import get_logger
 import uuid
+import json
 
 logger = get_logger(__name__)
 
@@ -40,21 +40,22 @@ class ChatbotAPIService:
         logger.debug(f"Response Body: {json.dumps(response_data)}")
         return response_data
 
-    def initiate_chat(self, channel_id, complainant_name, headers):
-        """Handles the first call to initiate a chat."""
+    def initiate_chat(self, channel_id, data_elements, headers):
+        """Handles the first call to initiate a chat with a set of data elements."""
         endpoint = "agentic-chat/v2"
         payload = {
             "channelID": channel_id,
             "conversationID": "initial",
-            "dataElements": [
-                {"name": "complainantFullName", "value": complainant_name}
-            ]
+            "dataElements": data_elements,
+            "requestType": "ComplaintCapture",
+            "chatText": "proceed",
+            "action": "proceed"
         }
         return self._send_request("POST", endpoint, headers, payload)
 
     def send_message(self, conversation_id, chat_text, headers):
         """Sends a subsequent message in an ongoing conversation."""
-        endpoint = f"agentic-chat/v2?X-CORRELATION-ID={headers.get('CLIENT_CORRELATION_ID')}"
+        endpoint = "agentic-chat/v2"  # Corrected: Removed correlation ID from query parameter
         payload = {
             "conversationID": conversation_id,
             "requestType": "ComplaintCapture",
