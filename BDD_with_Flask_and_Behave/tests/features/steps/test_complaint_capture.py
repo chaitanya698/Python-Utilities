@@ -10,8 +10,6 @@ from utils.logger_config import get_logger
 logger = get_logger(__name__)
 
 # --- Dynamic Answer Logic ---
-# This map allows the test to respond intelligently to LLM-generated questions
-# without being brittle. We match keywords in the AI's question to a predefined answer.
 DYNAMIC_RESPONSE_MAP = {
     "reason was the customer given for the loan denial": "No reason was provided by the bank.",
     "discrimination or unfair lending practices": "The customer alleges the loan denial is due to Misconduct Sales.",
@@ -21,10 +19,7 @@ DYNAMIC_RESPONSE_MAP = {
 }
 
 def get_dynamic_answer(question_text):
-    """
-    Parses the AI's question and finds the best-matching answer from the map.
-    This is the core of handling the dynamic nature of the chatbot.
-    """
+    """Parses the AI's question and finds the best-matching answer from the map."""
     question_text_lower = question_text.lower()
     for keyword, answer in DYNAMIC_RESPONSE_MAP.items():
         if keyword in question_text_lower:
@@ -38,15 +33,11 @@ def get_dynamic_answer(question_text):
 # --- State Management Fixture ---
 @pytest.fixture
 def chatbot_context():
-    """
-    This fixture acts as a shared dictionary to pass state between steps.
-    It replaces the 'context' object from behave.
-    """
+    """Acts as a shared dictionary to pass state between steps."""
     return {}
 
 
 # --- Scenario Definition ---
-# This line links the Gherkin feature file and the specific scenario to this test function.
 @scenario('../features/complaint_capture.feature', 'Full complaint capture flow for various complaint types')
 def test_complaint_capture():
     """This function binds the scenario to the steps below."""
@@ -62,60 +53,51 @@ def api_is_available(chatbot_context, channel):
     chatbot_context['api_service'] = ChatbotAPIService()
     chatbot_context['channel_id'] = channel
     chatbot_context['headers'] = {'CLIENT_CORRELATION_ID': f'test-run-{uuid.uuid4()}'}
+    chatbot_context['data_elements'] = []  # To collect initial data
     assert chatbot_context['api_service'] is not None
 
 @when(parsers.parse('I start a new complaint conversation for "{complainant_name}"'))
 def start_complaint(chatbot_context, complainant_name):
-    """Initiates the chat and captures the conversation ID."""
+    """Stores the complainant's name to be sent in the initial request."""
+    chatbot_context['data_elements'].append(
+        {"name": "complainantFullName", "value": complainant_name}
+    )
+
+@when(parsers.parse('I provide the complaint received date as "{date}"'))
+def provide_date(chatbot_context, date):
+    """Stores the complaint date."""
+    chatbot_context['data_elements'].append(
+        {"name": "complaintReceivedDate", "value": date}
+    )
+
+@when(parsers.parse('I provide the complaint received method as "{method}"'))
+def provide_method(chatbot_context, method):
+    """Stores the complaint reception method."""
+    chatbot_context['data_elements'].append(
+        {"name": "complaintReceivedMethod", "value": method}
+    )
+
+@when('I provide the account number')
+def provide_account_number(chatbot_context):
+    """Adds account number and sends the complete initial data in one API call."""
     api = chatbot_context['api_service']
+    account_number = "9876543210"
+    chatbot_context['data_elements'].append(
+        {"name": "accountNumber", "value": account_number}
+    )
+    
+    # All initial data is collected, now initiate the chat
     response = api.initiate_chat(
         channel_id=chatbot_context['channel_id'],
-        complainant_name=complainant_name,
+        data_elements=chatbot_context['data_elements'],
         headers=chatbot_context['headers']
     )
+    
     # Persist the conversationID and the response for the next steps
     chatbot_context['conversation_id'] = response.get('conversationID')
     chatbot_context['last_response'] = response
     
     assert chatbot_context['conversation_id'] is not None
-    assert 'When was the complaint received?' in response.get('chatResponseText', '')
-
-@when(parsers.parse('I provide the complaint received date as "{date}"'))
-def provide_date(chatbot_context, date):
-    """Sends the complaint date."""
-    api = chatbot_context['api_service']
-    response = api.send_message(
-        conversation_id=chatbot_context['conversation_id'],
-        chat_text=date,
-        headers=chatbot_context['headers']
-    )
-    chatbot_context['last_response'] = response
-    assert 'How was the complaint received?' in response.get('chatResponseText', '')
-
-@when(parsers.parse('I provide the complaint received method as "{method}"'))
-def provide_method(chatbot_context, method):
-    """Sends the complaint reception method."""
-    api = chatbot_context['api_service']
-    response = api.send_message(
-        conversation_id=chatbot_context['conversation_id'],
-        chat_text=method,
-        headers=chatbot_context['headers']
-    )
-    chatbot_context['last_response'] = response
-    assert 'account or reference' in response.get('chatResponseText', '')
-
-@when('I provide the account number')
-def provide_account_number(chatbot_context):
-    """Sends a placeholder account number."""
-    api = chatbot_context['api_service']
-    # This value is static for this example, but could be parameterized
-    account_number = "9876543210"
-    response = api.send_message(
-        conversation_id=chatbot_context['conversation_id'],
-        chat_text=account_number,
-        headers=chatbot_context['headers']
-    )
-    chatbot_context['last_response'] = response
     assert 'classify the complaint correctly' in response.get('chatResponseText', '')
 
 @when(parsers.parse('I describe the initial complaint about "{initial_complaint}"'))
