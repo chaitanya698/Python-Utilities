@@ -1,7 +1,0 @@
-pytest
-pytest-bdd
-pytest-html
-pydantic-settings
-requests
-cryptography
-urllib3
