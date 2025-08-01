@@ -1,84 +1,96 @@
+# bdd_tests/conftest.py
+
 import pytest
-import logging
 import pytest_html
+import logging
+from typing import Dict, Any
+
 from bdd_tests.utils.api_service import ChatbotAPIService
-from config.loader import config
+from bdd_tests.utils.db_utils import DBUtils
 
-# Ensure logging is set up before tests run
-from utils.logger_config import get_logger
-get_logger(__name__)
+logger = logging.getLogger(__name__)
 
-
-# --- Fixtures to provide services to tests ---
+# --- Service Fixtures ---
 
 @pytest.fixture(scope="session")
-def api_service():
+def api_service() -> ChatbotAPIService:
     """Provides a session-scoped instance of the ChatbotAPIService."""
-    return ChatbotAPIService(config)
+    return ChatbotAPIService()
 
-@pytest.fixture
-def chatbot_context():
-    """Provides a clean dictionary for sharing state within a single scenario."""
+@pytest.fixture(scope="function")
+def db_utils() -> DBUtils:
+    """Provides a function-scoped DB utility that handles connection setup and teardown."""
+    db = DBUtils()
+    try:
+        db.connect()
+        yield db
+    finally:
+        db.disconnect()
+
+# --- Context Fixture ---
+
+@pytest.fixture(scope="function")
+def chatbot_context() -> Dict[str, Any]:
+    """
+    Provides a clean dictionary for sharing state within a single scenario.
+    This is reset for each scenario to ensure test isolation.
+    """
     return {}
 
-
-# --- Hooks for Richer HTML Reporting ---
+# --- Pytest HTML Reporting Hooks ---
 
 def pytest_html_report_title(report):
-    """Set a custom title for the HTML report."""
-    report.title = "Chatbot Complaint Flow - Test Report"
+    """Sets a custom title for the HTML report."""
+    report.title = "Chatbot Complaint AI - BDD Test Report"
 
 def pytest_configure(config):
-    """Add metadata to the report header."""
-    config._metadata['Project'] = 'Space Complaint AI'
-    config._metadata['Framework'] = 'Pytest-BDD'
-    config._metadata['Python'] = '3.12.5' # Example version
+    """Adds project metadata to the HTML report header."""
+    config.stash['metadata'] = {
+        'Project': 'Space Complaint AI',
+        'Framework': 'Pytest-BDD',
+    }
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
-    """
-    Hook to access test outcomes and add extra details to the HTML report.
-    This is where we add the detailed step information.
-    """
+    """Adds detailed BDD steps with status icons to the HTML report."""
     outcome = yield
     report = outcome.get_result()
     
-    # We only want to modify the report for the 'call' phase
+    # We only want to add details to the 'call' phase of the test
     if report.when == "call":
-        # Attempt to get the detailed steps from the test item (scenario)
-        try:
-            scenario = item.function.__scenario__
-            steps_details = []
-            if hasattr(item, 'step_results'):
-                for step, status, icon in item.step_results:
-                    steps_details.append(f"<div class='step-detail'><span class='step-status'>{icon}</span> <span class='step-keyword'>{step.keyword}</span> {step.name}</div>")
-            
-            # Add the formatted steps to the report
-            report.extra = getattr(report, 'extra', [])
-            report.extra.append(pytest_html.extras.html(f"<h4>Scenario Steps:</h4>{''.join(steps_details)}"))
-        except AttributeError:
-            # This test is not a BDD scenario, so we do nothing
-            pass
+        # Add step details if they were captured by our custom hook
+        if hasattr(item, "bdd_step_results"):
+            steps_html = "".join(
+                f'<div><span class="status {status.lower()}">{icon}</span> {step_name}</div>'
+                for step_name, status, icon in item.bdd_step_results
+            )
+            report.extra.append(pytest_html.extras.html(f"<h4>Scenario Steps:</h4>{steps_html}"))
 
-@pytest.bdd_before_scenario
-def setup_scenario_tracking(request):
-    """Initialize a list to hold step results for the current scenario."""
-    item = request.node
-    item.step_results = []
+@pytest.hookimpl(tryfirst=True)
+def pytest_bdd_before_scenario(request, feature, scenario):
+    """Initializes a list to hold step results before each scenario."""
+    request.node.bdd_step_results = []
 
-@pytest.bdd_after_step
-def record_step_result(request, step, step_func):
-    """Record the result of each step to be used in the final report."""
+@pytest.hookimpl(tryfirst=True)
+def pytest_bdd_after_step(request, step, step_func, step_func_args):
+    """
+    Records the result of each step right after it runs.
+    This is a more reliable way to capture step status for reporting.
+    """
     item = request.node
-    # Find the report for the current test item
+    # Find the report for the 'call' phase of the current test item
     try:
-        # This logic finds the most recent report for the 'call' phase of the current node
-        report = next(rep for rep in reversed(item.session.reports) if rep.nodeid == item.nodeid and rep.when == 'call')
-        if report.passed:
-            status, icon = "PASSED", "✅"
-        else:
-            status, icon = "FAILED", "❌"
+        call_report = next(
+            rep for rep in reversed(item.session.reports) 
+            if rep.nodeid == item.nodeid and rep.when == "call"
+        )
+        status, icon = ("Passed", "✅") if call_report.passed else ("Failed", "❌")
     except (StopIteration, AttributeError):
-        status, icon = "SKIPPED", "➖"
-        
-    item.step_results.append((step, status, icon))
+        # This can happen if the step fails during setup
+        status, icon = ("Failed", "❌")
+
+    # If the step itself failed, override status
+    if call_report.outcome != "passed":
+        status, icon = ("Failed", "❌")
+
+    item.bdd_step_results.append((step.name, status, icon))
