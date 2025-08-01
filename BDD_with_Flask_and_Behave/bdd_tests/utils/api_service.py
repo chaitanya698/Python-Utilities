@@ -1,80 +1,85 @@
+# bdd_tests/utils/api_service.py
+
 import requests
 import logging
 import json
-import os
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from typing import Dict, Any
+
+# Note: config is now imported from the loader, which ensures it's processed.
+from bdd_tests.config.loader import config
+
+logger = logging.getLogger(__name__)
 
 class ChatbotAPIService:
-    """A robust and reusable service to interact with the chatbot API."""
+    """A robust service class to handle all interactions with the Chatbot API."""
 
-    def __init__(self, config):
-        self.config = config
-        self.base_url = self.config.API_BASE_URL
+    def __init__(self):
+        """Initializes the service with a persistent HTTP session and retry logic."""
+        self.base_url = config.API_BASE_URL
         self.session = self._create_session()
-        self.initial_request_template = self._load_initial_request_template()
-        self.logger = logging.getLogger(__name__)
 
-    def _create_session(self):
-        """Creates a requests session with retry logic and certificate handling."""
+    def _create_session(self) -> requests.Session:
+        """Configures and returns a requests Session object."""
         session = requests.Session()
-        retries = Retry(total=3, backoff_factor=1, status_forcelist=[502, 503, 504])
-        session.mount('https://', HTTPAdapter(max_retries=retries))
-        
-        # Use the securely processed PEM certificate paths from the config
-        if self.config.CERT_PEM_PATH and self.config.KEY_PEM_PATH:
-            self.logger.info("Attaching client certificates to session.")
-            session.cert = (self.config.CERT_PEM_PATH, self.config.KEY_PEM_PATH)
+        retry_strategy = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("https://", adapter)
+
+        # Configure SSL with the client-side certificate from the processed config
+        session.verify = False  # Disable normal verification for custom cert
+        if config.CERT_PEM_PATH and config.KEY_PEM_PATH:
+            session.cert = (config.CERT_PEM_PATH, config.KEY_PEM_PATH)
+            logger.info("Session created with client certificate authentication.")
+
+        session.headers.update({'Content-Type': 'application/json', 'Accept': 'application/json'})
         return session
 
-    def _load_initial_request_template(self):
-        """Loads the initial request JSON from the resources folder."""
-        # Correctly navigate up from utils, then into resources
-        template_path = os.path.join(os.path.dirname(__file__), '..', '..', 'resources', 'initial_request.json')
+    def _send_request(self, payload: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
+        """A private, reusable method to send POST requests and handle responses."""
+        endpoint = f"{self.base_url}/api/agentic-chat/v1"
+        correlation_id = headers.get('CLIENT-CORRELATION-ID', 'N/A')
+        
+        logger.info(f"[{correlation_id}] Sending request to endpoint: {endpoint}")
+        logger.debug(f"[{correlation_id}] Request Headers: {headers}")
+        logger.debug(f"[{correlation_id}] Request Payload: {json.dumps(payload, indent=2)}")
+
         try:
-            with open(template_path, 'r') as f:
-                return json.load(f)
-        except Exception as e:
-            self.logger.error(f"Could not load 'initial_request.json' from '{template_path}': {e}")
+            response = self.session.post(endpoint, json=payload, headers=headers, timeout=30)
+            logger.info(f"[{correlation_id}] Received response with status: {response.status_code}")
+            logger.debug(f"[{correlation_id}] Response Body: {response.text}")
+            
+            response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
+            return response.json()
+        except requests.exceptions.HTTPError as http_err:
+            logger.error(f"[{correlation_id}] HTTP error occurred: {http_err} - Response: {http_err.response.text}")
+            raise
+        except requests.exceptions.RequestException as req_err:
+            logger.error(f"[{correlation_id}] A critical request error occurred: {req_err}")
             raise
 
-    def initiate_chat(self, channel_id, complainant_name, headers):
-        """Initiates a chat using the JSON template."""
-        self.logger.info(f"Initiating chat for '{complainant_name}' on channel '{channel_id}'")
-        payload = self.initial_request_template.copy()
-        payload['channelId'] = channel_id
+    def initiate_chat(self, initial_request_data: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
+        """
+        Initiates a new chat conversation.
+        This method constructs the initial payload and uses the generic send method.
+        """
+        if not initial_request_data.get('channelId') or not initial_request_data.get('requestType'):
+            raise ValueError("channelId and requestType are required for initiating a chat.")
         
-        # Find and update the complainant's name in the dataElements
-        for element in payload.get("dataElements", []):
-            if element.get("name") == "complainantFullName":
-                element["value"] = complainant_name
-                break
-        
-        self.logger.debug(f"API Request Payload: {json.dumps(payload, indent=2)}")
-        
-        # This is where you would make the actual API call
-        # response = self.session.post(f"{self.base_url}/your_endpoint", json=payload, headers=headers)
-        # response.raise_for_status()
-        # return response.json()
-        
-        # For demonstration purposes, we'll return a mock response
-        return {
-            "conversationId": "mock-conv-12345",
-            "chatResponseText": "When was the complaint received?"
-        }
+        # Ensure the conversationID is set to 'initial' for the first request
+        initial_request_data['conversationID'] = 'initial'
+        return self._send_request(initial_request_data, headers)
 
-    def send_message(self, conversation_id, chat_text, headers):
-        """Sends a follow-up message in an existing conversation."""
-        self.logger.info(f"Sending message to conversation '{conversation_id}': '{chat_text}'")
-        payload = {"chatText": chat_text} # Example payload
-        
-        # Make the actual API call here
-        # response = self.session.post(f"{self.base_url}/endpoint/{conversation_id}", json=payload, headers=headers)
-        # response.raise_for_status()
-        # return response.json()
-        
-        # Mock response for demonstration
-        if "10/07/2024" in chat_text:
-            return {"chatResponseText": "Select the account or reference this complaint is regarding."}
-        else:
-            return {"chatResponseText": "I have received your message."}
+    def send_message(self, conversation_id: str, chat_text: str, action: str, headers: Dict[str, str]) -> Dict[str, Any]:
+        """
+        Sends a subsequent message in an existing conversation.
+        """
+        payload = {
+            "channelID": "BBVA",  # Assuming this is constant for subsequent messages
+            "conversationID": conversation_id,
+            "requestType": "ComplaintCapture", # Assuming constant
+            "chatText": chat_text,
+            "action": action
+        }
+        return self._send_request(payload, headers)
