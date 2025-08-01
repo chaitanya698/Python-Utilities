@@ -1,20 +1,23 @@
 # bdd_tests/config/settings.py
 
-import os # Import the os module
+import os
 from pydantic import BaseSettings
 from typing import Optional
 from pathlib import Path
 from dotenv import load_dotenv
 from sqlalchemy.engine.url import URL
 
-# Determine the environment from an OS variable, defaulting to 'qa'
-# This is the key change for switching environments
+# This is the key change: dynamically determine which .env file to load
 active_env = os.getenv("TEST_ENV", "qa").lower()
 env_file_path = Path(__file__).resolve().parent.parent / f".env.{active_env}"
 
+# Ensure the selected .env file exists before trying to load it
+if not env_file_path.exists():
+    raise FileNotFoundError(f"Environment file not found for '{active_env}' environment: {env_file_path}")
+
 # Load the determined .env file
 load_dotenv(dotenv_path=env_file_path, override=True)
-print(f"✅ Loading environment settings from: {env_file_path}") # Added for clarity
+print(f"✅ Loading environment settings from: {env_file_path}")
 
 class Settings(BaseSettings):
     """
@@ -50,11 +53,6 @@ class Settings(BaseSettings):
             port=self.DB_PORT,
             database=self.DB_NAME,
         ))
-
-    class Config:
-        # Pydantic will now read from the environment variables loaded by load_dotenv
-        # No need to specify env_file here anymore
-        case_sensitive = True
 
 # Create a singleton instance for other modules to import easily
 settings = Settings()
