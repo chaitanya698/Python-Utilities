@@ -1,17 +1,14 @@
+# bdd_tests/features/complaint_capture.feature
+
 @complaintFlow
-Feature: AI Chatbot Complaint Capture Workflow
+Feature: AI Chatbot Complaint Workflow
 
-  As a bank teller, I need to use the chatbot to accurately capture a customer's complaint so that it can be processed correctly.
-
-  Scenario Outline: Full complaint capture flow for various complaint types
-    Given the chatbot API is available for "<channel>"
-    When I start a new complaint conversation for "<complainant_name>"
-    And I provide the complaint received date as "10/07/2024"
-    And I provide the complaint received method as "<method>"
-    And I provide the account number
-    Then the final summary should be generated correctly
-
-    Examples:
-      | channel | complainant_name | method |
-      | BBVA    | John Doe         | Phone  |
-      | CHASE   | Jane Smith       | Web    |
+  Scenario: Verify initial complaint request creates a conversation and is saved to the database
+    Given the chatbot API is available
+    When I send the initial complaint request from "initial_request.json"
+    Then the API response should be successful
+    And the response should contain a valid conversation ID
+    And the response action should be to "proceed" with label "Confirm date"
+    And the chat response text should be "When was the complaint received?"
+    And the conversation ID should follow the pattern "CVD-########-####-####-####-############"
+    And the initial chat interaction should be saved in the database
