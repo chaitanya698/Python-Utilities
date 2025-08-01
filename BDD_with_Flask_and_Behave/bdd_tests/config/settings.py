@@ -1,3 +1,4 @@
+# bdd_tests/config/settings.py
 
 from pydantic import BaseSettings
 from typing import Optional
