@@ -6,10 +6,7 @@ import logging
 import os
 from typing import Dict, Any
 
-from bdd_tests.utils.api_service import ChatbotAPIService
-from bdd_tests.utils.db_utils import DBUtils
-
-logger = logging.getLogger(__name__)
+# --- Pytest Hooks (Run First) ---
 
 def pytest_addoption(parser):
     """Adds the --env command-line option to pytest."""
@@ -25,21 +22,40 @@ def pytest_configure(config):
     """
     This hook runs after command-line options are parsed.
     It sets the TEST_ENV os variable, which the settings module will then use.
+    This must run before other modules are imported.
     """
     env = config.getoption("--env")
     os.environ["TEST_ENV"] = env
+    # Now that the environment is set, we can import modules that depend on it.
+    from bdd_tests.config import settings # Import here to ensure env is set first
+    from bdd_tests.utils import logger_config # Initialize logging
+
+# Now that hooks are defined, we can import other modules
+from bdd_tests.utils.api_service import ChatbotAPIService
+from bdd_tests.utils.db_utils import DBUtils
+
+logger = logging.getLogger(__name__)
 
 # --- Service Fixtures ---
 
 @pytest.fixture(scope="session")
 def api_service() -> ChatbotAPIService:
-    """Provides a session-scoped instance of the ChatbotAPIService."""
+    """Provides a single, session-scoped instance of the ChatbotAPIService."""
     return ChatbotAPIService()
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="function")
 def db_utils() -> DBUtils:
-    """Provides a session-scoped DB utility instance."""
-    return DBUtils()
+    """
+    Provides a function-scoped DB utility.
+    This fixture will create a new DBUtils instance for each test function
+    and ensure its connection pool is disposed of after the test completes.
+    """
+    db = DBUtils()
+    yield db  # The test runs at this point
+    # --- Teardown Code ---
+    # This code runs after the test function has finished.
+    logger.info("Disposing of database engine connection pool after test.")
+    db.dispose_engine()
 
 # --- Context Fixture ---
 
