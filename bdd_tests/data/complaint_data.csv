@@ -1,0 +1,3 @@
+test_case_id,initial_request_file,complaint_date,complaint_method,account_number,complaint_details,final_summary_comment,contact_willingness_response,expected_initial_action_label,expected_initial_response_text
+TC001,initial_request.json,10/08/2025,Phone,00A...3970,My loan application was rejected without reason,It's a sales misconduct,Yes,Confirm date,When was the complaint received?
+TC002,initial_request.json,12/08/2025,Email,00B...4512,I was overcharged on my last statement,Billing error,No,Confirm date,When was the complaint received?

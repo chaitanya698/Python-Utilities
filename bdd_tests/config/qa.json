@@ -1,0 +1,6 @@
+{
+    "api_base_url": "https://api.qa.example.com",
+    "log_level": "INFO",
+    "cert_pfx_path": "/path/to/your/qa-cert.pfx",
+    "cert_password": "your_qa_cert_password"
+}
