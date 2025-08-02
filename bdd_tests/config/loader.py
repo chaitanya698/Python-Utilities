@@ -1,4 +1,3 @@
-# config/loader.py
 
 import os
 import tempfile
@@ -11,7 +10,7 @@ from cryptography.hazmat.backends import default_backend
 # Import the settings model (schema) from settings.py
 from .settings import Settings
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger()
 
 def _load_environment_variables():
     """
@@ -19,7 +18,6 @@ def _load_environment_variables():
     variable and loads it.
     """
     active_env = os.getenv("TEST_ENV", "qa").lower()
-    # Assuming the .env files are in the root of the 'bdd_tests' directory
     env_file_path = Path(__file__).resolve().parent.parent / f".env.{active_env}"
 
     if env_file_path.exists():
@@ -50,17 +48,11 @@ def _process_pfx_certificate(settings_instance: Settings):
             default_backend()
         )
 
-        # Create a temporary file for the PEM-encoded private key
         key_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pem', mode='w+b')
         settings_instance.KEY_PEM_PATH = key_file.name
-        key_file.write(private_key.private_bytes(
-            encoding=Encoding.PEM,
-            format=PrivateFormat.TraditionalOpenSSL,
-            encryption_algorithm=NoEncryption()
-        ))
+        key_file.write(private_key.private_bytes(encoding=Encoding.PEM, format=PrivateFormat.TraditionalOpenSSL, encryption_algorithm=NoEncryption()))
         key_file.close()
 
-        # Create a temporary file for the PEM-encoded certificate
         cert_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pem', mode='w+b')
         settings_instance.CERT_PEM_PATH = cert_file.name
         cert_file.write(certificate.public_bytes(Encoding.PEM))
@@ -68,9 +60,6 @@ def _process_pfx_certificate(settings_instance: Settings):
 
         logger.info("Certificate extracted successfully to temporary PEM files.")
 
-    except ValueError:
-        logger.error("Invalid certificate password. Please check CERT_PASSWORD in your .env file.")
-        raise
     except Exception as e:
         logger.error(f"Failed to process PFX certificate: {e}")
         raise
@@ -78,20 +67,12 @@ def _process_pfx_certificate(settings_instance: Settings):
 def load_and_get_config() -> Settings:
     """
     The main function to load and process all configurations.
-    This is the single entry point for the rest of the application.
+    This should be called only once by a controlling fixture.
     """
-    # 1. Load variables from the correct .env file into the OS environment
     _load_environment_variables()
-    
-    # 2. Instantiate the Pydantic model, which automatically reads from the environment
     settings_instance = Settings()
-    
-    # 3. Perform any additional processing on the loaded settings, like certs
     if settings_instance.CERT_PFX_PATH:
         _process_pfx_certificate(settings_instance)
-        
     return settings_instance
 
-# Create a single, authoritative config instance to be imported by other modules.
-# This ensures the loading and processing logic runs only once.
-config = load_and_get_config()
+# The line "config = load_and_get_config()" has been removed from this file.
