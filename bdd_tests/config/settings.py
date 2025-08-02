@@ -1,4 +1,4 @@
-# config/settings.py
+
 
 from pydantic import BaseModel
 from typing import Optional
@@ -16,7 +16,7 @@ class Settings(BaseModel):
 
     # Oracle Database Settings
     DB_HOST: str
-    DB_PORT: int = 1521
+    DB_PORT: int 
     DB_USER: str
     DB_PASSWORD: str
     DB_SERVICE_NAME: str
