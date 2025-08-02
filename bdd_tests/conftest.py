@@ -6,10 +6,13 @@ import html
 import platform
 from datetime import datetime
 from typing import Dict, Any
+
 import pytest_html
 
+# Optimized: Import helpers and utilities from other modules
 from utils.csv_reader import load_csv_data
 from utils.report_helpers import StepLogCapture, get_report_css, get_report_js
+from config.settings import Settings
 
 # --- Pytest Core Hooks ---
 
@@ -58,6 +61,16 @@ def pytest_bdd_generate_tests(metafunc):
             metafunc.parametrize("test_data_row", all_test_data, ids=test_case_ids)
 
 # --- Fixtures ---
+
+@pytest.fixture(scope="session")
+def config() -> Settings:
+    """
+    Loads the application configuration lazily and once per session.
+    This fixture ensures that config loading happens *after* pytest_configure
+    has set up the necessary environment variables, preventing validation errors.
+    """
+    from config.loader import load_and_get_config
+    return load_and_get_config()
 
 @pytest.fixture(scope="function")
 def chatbot_context() -> Dict[str, Any]:
