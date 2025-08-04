@@ -1,6 +1,13 @@
 {
-    "api_base_url": "https://api.qa.example.com",
-    "log_level": "INFO",
-    "cert_pfx_path": "/path/to/your/qa-cert.pfx",
-    "cert_password": "your_qa_cert_password"
+    "ENVIRONMENT": "qa",
+    "API_BASE_URL": "https://qa-api.example.com",
+    "API_TIMEOUT": 45,
+    "API_RETRY_COUNT": 3,
+    "DB_HOST": "qa-db.example.com",
+    "DB_PORT": 1521,
+    "DB_SERVICE_NAME": "QA_SERVICE",
+    "LOG_LEVEL": "INFO",
+    "ENABLE_DETAILED_LOGGING": true,
+    "ENABLE_DB_QUERY_LOGGING": false,
+    "VERIFY_SSL": true
 }

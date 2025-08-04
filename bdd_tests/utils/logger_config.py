@@ -6,18 +6,19 @@ from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from typing import Optional
 
+
 class LoggerSetup:
     """Centralized logger configuration for the framework."""
-
+    
     _initialized = False
     _log_dir = Path("logs")
-
+    
     @classmethod
-    def setup(cls, log_level: str = "INFO", log_file: Optional[str] = None):
+    def setup(cls, log_level: str = "INFO", log_file: Optional[str] = None) -> None:
         """Configure logging for the entire application."""
         if cls._initialized:
             return
-            
+        
         # Create logs directory
         cls._log_dir.mkdir(exist_ok=True)
         
@@ -42,13 +43,15 @@ class LoggerSetup:
         # File handler
         if log_file is None:
             log_file = cls._log_dir / f"automation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        else:
+            log_file = Path(log_file)
         
         file_handler = RotatingFileHandler(
             log_file,
             maxBytes=10 * 1024 * 1024,  # 10MB
             backupCount=5
         )
-        file_handler.setLevel(logging.DEBUG)  # File gets all logs
+        file_handler.setLevel(logging.DEBUG)
         file_formatter = logging.Formatter(
             "%(asctime)s [%(levelname)-8s] [%(name)-30s:%(lineno)-4d] - %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S.%f"
@@ -57,16 +60,17 @@ class LoggerSetup:
         root_logger.addHandler(file_handler)
         
         # Suppress noisy loggers
-        logging.getLogger("urllib3").setLevel(logging.WARNING)
-        logging.getLogger("requests").setLevel(logging.WARNING)
+        for logger_name in ["urllib3", "requests", "oracledb"]:
+            logging.getLogger(logger_name).setLevel(logging.WARNING)
         
         cls._initialized = True
         root_logger.info(f"Logging initialized - Level: {log_level}, File: {log_file}")
-    def get_logger(name: str) -> logging.Logger:
-        """Get a logger instance for a module."""
-        return logging.getLogger(name)
 
-    # Initialize on import with defaults
-    
+
+def get_logger(name: str) -> logging.Logger:
+    """Get a logger instance for a module."""
+    return logging.getLogger(name)
+
+
+# Initialize on import with defaults
 LoggerSetup.setup(log_level=os.getenv("LOG_LEVEL", "INFO"))
-

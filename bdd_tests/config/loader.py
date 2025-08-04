@@ -1,65 +1,90 @@
 import os
-import sys
+import json
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
 from dotenv import load_dotenv
-from cryptography.hazmat.primitives.serialization import pkcs12, Encoding, PrivateFormat, NoEncryption
+from cryptography.hazmat.primitives.serialization import (
+    pkcs12, Encoding, PrivateFormat, NoEncryption
+)
 from cryptography.hazmat.backends import default_backend
 
 from .settings import Settings
 from .config_validator import ConfigValidator
-from core.utils.logger import get_logger
+from utils.logger_config import get_logger
+
 
 class ConfigLoader:
-
+    """Handles configuration loading and certificate processing."""
+    
     def __init__(self):
         self.logger = get_logger(__name__)
         self._settings: Optional[Settings] = None
-        
+        self._temp_files: list[str] = []
+    
     def load(self) -> Settings:
-        """Load configuration with proper precedence: ENV vars > .env file > defaults."""
+        """Load configuration with proper precedence."""
         if self._settings:
             return self._settings
-            
-        # 1. Determine environment
-        environment = os.getenv("ENVIRONMENT", "development").lower()
+        
+        # Determine environment
+        environment = os.getenv("ENVIRONMENT", "qa").lower()
         self.logger.info(f"Loading configuration for environment: {environment}")
         
-        # 2. Load .env file for the environment
+        # Load environment-specific configuration
         self._load_env_file(environment)
+        self._load_json_config(environment)
         
-        # 3. Validate required environment variables
+        # Validate required environment variables
         ConfigValidator.validate_required_vars()
         
-        # 4. Create settings instance
+        # Create settings instance
         self._settings = Settings()
         
-        # 5. Process certificate if needed
+        # Process certificate if needed
         self._process_certificate()
         
-        # 6. Log configuration (without sensitive data)
+        # Log configuration (without sensitive data)
         self._log_configuration()
         
         return self._settings
-
-    def _load_env_file(self, environment: str):
+    
+    def _load_env_file(self, environment: str) -> None:
         """Load environment-specific .env file."""
-        env_file = Path(f".env.{environment}")
+        env_files = [
+            Path(f".env.{environment}"),
+            Path(".env"),
+        ]
         
-        if not env_file.exists():
-            self.logger.warning(f"Environment file {env_file} not found. Using .env.example as fallback.")
-            env_file = Path(".env.example")
+        for env_file in env_files:
+            if env_file.exists():
+                load_dotenv(dotenv_path=env_file, override=False)
+                self.logger.info(f"Loaded environment file: {env_file}")
+                return
         
-        if env_file.exists():
-            load_dotenv(dotenv_path=env_file, override=False)
-            self.logger.info(f"Loaded environment file: {env_file}")
-        else:
-            self.logger.error("No environment file found. Relying on system environment variables.")
-
-    def _process_certificate(self):
+        self.logger.warning("No environment file found. Using system environment variables.")
+    
+    def _load_json_config(self, environment: str) -> None:
+        """Load JSON configuration if exists."""
+        config_file = Path(f"config/{environment}.json")
+        
+        if config_file.exists():
+            with open(config_file, 'r') as f:
+                config_data = json.load(f)
+            
+            # Set environment variables from JSON config
+            for key, value in config_data.items():
+                if not os.getenv(key):
+                    os.environ[key] = str(value)
+            
+            self.logger.info(f"Loaded JSON config: {config_file}")
+    
+    def _process_certificate(self) -> None:
         """Extract PEM files from PFX certificate."""
-        if not self._settings.CERT_PFX_PATH or not os.path.exists(self._settings.CERT_PFX_PATH):
+        if not self._settings.CERT_PFX_PATH:
+            raise ValueError("Certificate path not configured")
+        
+        if not Path(self._settings.CERT_PFX_PATH).exists():
             raise ValueError(f"Certificate file not found: {self._settings.CERT_PFX_PATH}")
         
         self.logger.info("Processing PFX certificate...")
@@ -75,29 +100,34 @@ class ConfigLoader:
             )
             
             # Create temporary PEM files
-            key_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pem', mode='w+b')
-            self._settings.KEY_PEM_PATH = key_file.name
-            key_file.write(
-                private_key.private_bytes(
-                    encoding=Encoding.PEM,
-                    format=PrivateFormat.TraditionalOpenSSL,
-                    encryption_algorithm=NoEncryption()
-                )
+            key_file = tempfile.NamedTemporaryFile(
+                delete=False, suffix='_key.pem', mode='w+b'
             )
+            key_data = private_key.private_bytes(
+                encoding=Encoding.PEM,
+                format=PrivateFormat.TraditionalOpenSSL,
+                encryption_algorithm=NoEncryption()
+            )
+            key_file.write(key_data)
             key_file.close()
+            self._settings.KEY_PEM_PATH = key_file.name
+            self._temp_files.append(key_file.name)
             
-            cert_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pem', mode='w+b')
-            self._settings.CERT_PEM_PATH = cert_file.name
+            cert_file = tempfile.NamedTemporaryFile(
+                delete=False, suffix='_cert.pem', mode='w+b'
+            )
             cert_file.write(certificate.public_bytes(Encoding.PEM))
             cert_file.close()
+            self._settings.CERT_PEM_PATH = cert_file.name
+            self._temp_files.append(cert_file.name)
             
             self.logger.info("Certificate processed successfully")
             
         except Exception as e:
             self.logger.error(f"Failed to process certificate: {e}")
             raise
-
-    def _log_configuration(self):
+    
+    def _log_configuration(self) -> None:
         """Log configuration without sensitive information."""
         safe_config = {
             "environment": self._settings.ENVIRONMENT,
@@ -113,24 +143,28 @@ class ConfigLoader:
             }
         }
         self.logger.info(f"Configuration loaded: {safe_config}")
-
-    def cleanup(self):
+    
+    def cleanup(self) -> None:
         """Clean up temporary files."""
-        if self._settings:
-            for path in [self._settings.CERT_PEM_PATH, self._settings.KEY_PEM_PATH]:
-                if path and os.path.exists(path):
-                    try:
-                        os.remove(path)
-                        self.logger.debug(f"Removed temporary file: {path}")
-                    except Exception as e:
-                        self.logger.warning(f"Failed to remove temporary file {path}: {e}")
-#Singleton instance
+        for temp_file in self._temp_files:
+            if Path(temp_file).exists():
+                try:
+                    os.remove(temp_file)
+                    self.logger.debug(f"Removed temporary file: {temp_file}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to remove temporary file {temp_file}: {e}")
+        self._temp_files.clear()
+
+
+# Singleton instance
 _config_loader = ConfigLoader()
 
-def get_config() -> Settings:
 
+def get_config() -> Settings:
+    """Get the configuration settings."""
     return _config_loader.load()
 
-def cleanup_config():
-    _config_loader.cleanup()
 
+def cleanup_config() -> None:
+    """Clean up configuration resources."""
+    _config_loader.cleanup()

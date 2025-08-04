@@ -4,20 +4,21 @@ import uuid
 from typing import Dict, Any, Optional
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from requests.exceptions import RequestException, HTTPError
+from requests.exceptions import RequestException, HTTPError, Timeout
 
 from config.settings import Settings
-from core.utils.logger import get_logger
+from utils.logger_config import get_logger
+
 
 class ChatbotAPIClient:
     """Enterprise-grade API client with retry logic and comprehensive error handling."""
-
+    
     def __init__(self, config: Settings):
         self.config = config
         self.logger = get_logger(__name__)
-        self.base_url = config.API_BASE_URL
+        self.base_url = config.API_BASE_URL.rstrip('/')
         self.session = self._create_session()
-        
+    
     def _create_session(self) -> requests.Session:
         """Create a configured session with retry logic and certificate handling."""
         session = requests.Session()
@@ -49,42 +50,56 @@ class ChatbotAPIClient:
         session.verify = self.config.VERIFY_SSL
         
         return session
-
-    def _log_request(self, method: str, url: str, headers: Dict, data: Any):
+    
+    def _log_request(self, method: str, url: str, headers: Dict, data: Any) -> None:
         """Log API request details."""
         if self.config.ENABLE_DETAILED_LOGGING:
             self.logger.debug(f"API Request: {method} {url}")
             self.logger.debug(f"Headers: {self._sanitize_headers(headers)}")
-            self.logger.debug(f"Payload: {json.dumps(data, indent=2)}")
+            if data:
+                self.logger.debug(f"Payload: {json.dumps(data, indent=2)}")
         else:
             self.logger.info(f"API Request: {method} {url}")
-
-    def _log_response(self, response: requests.Response, correlation_id: str):
+    
+    def _log_response(self, response: requests.Response, correlation_id: str) -> None:
         """Log API response details."""
         if self.config.ENABLE_DETAILED_LOGGING:
             self.logger.debug(f"[{correlation_id}] Response Status: {response.status_code}")
-            self.logger.debug(f"[{correlation_id}] Response Body: {response.text}")
+            try:
+                self.logger.debug(f"[{correlation_id}] Response Body: {response.text}")
+            except Exception:
+                self.logger.debug(f"[{correlation_id}] Response Body: <Unable to decode>")
         else:
             self.logger.info(f"[{correlation_id}] Response Status: {response.status_code}")
-
+    
     def _sanitize_headers(self, headers: Dict) -> Dict:
         """Remove sensitive information from headers for logging."""
         sanitized = headers.copy()
-        sensitive_keys = ['authorization', 'x-api-key', 'cookie']
-        for key in sensitive_keys:
-            if key.lower() in {k.lower() for k in sanitized}:
+        sensitive_keys = ['authorization', 'x-api-key', 'cookie', 'cert-password']
+        
+        for key in list(sanitized.keys()):
+            if any(sensitive in key.lower() for sensitive in sensitive_keys):
                 sanitized[key] = '***REDACTED***'
+        
         return sanitized
-
-    def _make_request(self, method: str, endpoint: str, data: Optional[Dict] = None, 
-                    headers: Optional[Dict] = None) -> Dict[str, Any]:
+    
+    def _make_request(
+        self, 
+        method: str, 
+        endpoint: str, 
+        data: Optional[Dict] = None,
+        headers: Optional[Dict] = None,
+        correlation_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Make HTTP request with error handling."""
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        correlation_id = headers.get('CLIENT-CORRELATION-ID', str(uuid.uuid4())) if headers else str(uuid.uuid4())
+        correlation_id = correlation_id or str(uuid.uuid4())
         
         request_headers = self.session.headers.copy()
         if headers:
             request_headers.update(headers)
+        
+        request_headers['CLIENT-CORRELATION-ID'] = correlation_id
         
         self._log_request(method, url, request_headers, data)
         
@@ -102,34 +117,53 @@ class ChatbotAPIClient:
             
             return response.json()
             
+        except Timeout as e:
+            self.logger.error(f"[{correlation_id}] Request timeout after {self.config.API_TIMEOUT}s")
+            raise
         except HTTPError as e:
             self.logger.error(f"[{correlation_id}] HTTP Error: {e}")
-            self.logger.error(f"[{correlation_id}] Response: {e.response.text if e.response else 'No response'}")
+            if hasattr(e, 'response') and e.response is not None:
+                self.logger.error(f"[{correlation_id}] Response: {e.response.text}")
             raise
         except RequestException as e:
             self.logger.error(f"[{correlation_id}] Request Error: {e}")
             raise
+        except json.JSONDecodeError as e:
+            self.logger.error(f"[{correlation_id}] JSON Decode Error: {e}")
+            raise
         except Exception as e:
             self.logger.error(f"[{correlation_id}] Unexpected Error: {e}")
             raise
-
-    def initiate_chat(self, request_data: Dict[str, Any], correlation_id: Optional[str] = None) -> Dict[str, Any]:
+    
+    def initiate_chat(
+        self, 
+        request_data: Dict[str, Any], 
+        correlation_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Initiate a new chat conversation."""
-        headers = {
-            'CLIENT-CORRELATION-ID': correlation_id or f"INIT-{uuid.uuid4()}"
-        }
+        correlation_id = correlation_id or f"INIT-{uuid.uuid4()}"
         
+        # Ensure conversationId is set to 'initial'
         request_data['conversationId'] = 'initial'
         
-        self.logger.info(f"Initiating chat with correlation ID: {headers['CLIENT-CORRELATION-ID']}")
-        return self._make_request('POST', '/api/agentic-chat/v1', data=request_data, headers=headers)
-
-    def send_message(self, conversation_id: str, message: str, action: str = "proceed",
-                    correlation_id: Optional[str] = None) -> Dict[str, Any]:
+        self.logger.info(f"Initiating chat with correlation ID: {correlation_id}")
+        
+        return self._make_request(
+            'POST', 
+            '/api/agentic-chat/v1', 
+            data=request_data,
+            correlation_id=correlation_id
+        )
+    
+    def send_message(
+        self, 
+        conversation_id: str, 
+        message: str, 
+        action: str = "proceed",
+        correlation_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Send a message in an existing conversation."""
-        headers = {
-            'CLIENT-CORRELATION-ID': correlation_id or f"MSG-{uuid.uuid4()}"
-        }
+        correlation_id = correlation_id or f"MSG-{uuid.uuid4()}"
         
         payload = {
             "channelID": "BBVA",
@@ -140,9 +174,15 @@ class ChatbotAPIClient:
         }
         
         self.logger.info(f"Sending message to conversation: {conversation_id}")
-        return self._make_request('POST', '/api/agentic-chat/v1', data=payload, headers=headers)
-
-    def close(self):
+        
+        return self._make_request(
+            'POST',
+            '/api/agentic-chat/v1',
+            data=payload,
+            correlation_id=correlation_id
+        )
+    
+    def close(self) -> None:
         """Close the session and clean up resources."""
         if self.session:
             self.session.close()

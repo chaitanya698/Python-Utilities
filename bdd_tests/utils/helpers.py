@@ -1,32 +1,33 @@
 import re
 import uuid
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List, Tuple
 
-from core.utils.logger import get_logger
+from .logger_config import get_logger
 
-logger = get_logger(name)
 
 class TestHelpers:
     """Common helper functions for test automation."""
-
+    
+    logger = get_logger(__name__)
+    
     @staticmethod
     def generate_correlation_id(prefix: str = "TEST") -> str:
         """Generate a unique correlation ID."""
         return f"{prefix}-{uuid.uuid4()}"
-
+    
     @staticmethod
     def validate_conversation_id(conv_id: str) -> bool:
-        """Validate conversation ID format."""
-        pattern = r'^CVD-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+        """Validate conversation ID format (CVD-UUID)."""
+        pattern = r'^CVD[E,D,L]-[0-9]{6}-[0-9a-fA-F]{12}$'
         return bool(re.match(pattern, conv_id))
-
+    
     @staticmethod
     def validate_interaction_id(interaction_id: str) -> bool:
-        """Validate interaction ID format."""
+        """Validate interaction ID format (E/D/L followed by 10 digits)."""
         pattern = r'^[EDL]\d{10}$'
         return bool(re.match(pattern, interaction_id))
-
+    
     @staticmethod
     def format_duration(seconds: float) -> str:
         """Format duration in human-readable format."""
@@ -38,10 +39,17 @@ class TestHelpers:
         else:
             hours = seconds / 3600
             return f"{hours:.2f}h"
-
+    
     @staticmethod
-    def safe_dict_get(data: Dict[str, Any], path: str, default: Any = None) -> Any:
-        """Safely get nested dictionary values."""
+    def safe_dict_get(
+        data: Dict[str, Any], 
+        path: str, 
+        default: Any = None
+    ) -> Any:
+        """
+        Safely get nested dictionary values using dot notation.
+        Example: safe_dict_get(data, 'user.profile.name')
+        """
         keys = path.split('.')
         value = data
         
@@ -54,15 +62,23 @@ class TestHelpers:
                 return default
         
         return value
-
+    
     @staticmethod
-    def mask_sensitive_data(text: str, patterns: Optional[list] = None) -> str:
+    def mask_sensitive_data(
+        text: str, 
+        patterns: Optional[List[Tuple[str, Any]]] = None
+    ) -> str:
         """Mask sensitive data in text."""
         if patterns is None:
             patterns = [
-                (r'\b\d{4,}\b', lambda m: '*' * len(m.group())),  # Numbers > 4 digits
-                (r'password["\']?\s*[:=]\s*["\']?([^"\'\s]+)', lambda m: f'password: ***'),
-                (r'token["\']?\s*[:=]\s*["\']?([^"\'\s]+)', lambda m: f'token: ***'),
+                # Account numbers (4+ digits)
+                (r'\b\d{4,}\b', lambda m: '*' * len(m.group())),
+                # Passwords
+                (r'password["\']?\s*[:=]\s*["\']?([^"\'\s]+)', 
+                 lambda m: 'password: ***'),
+                # Tokens
+                (r'token["\']?\s*[:=]\s*["\']?([^"\'\s]+)', 
+                 lambda m: 'token: ***'),
             ]
         
         masked = text
@@ -70,17 +86,20 @@ class TestHelpers:
             masked = re.sub(pattern, replacement, masked, flags=re.IGNORECASE)
         
         return masked
-
+    
     @staticmethod
     def calculate_success_rate(passed: int, total: int) -> float:
         """Calculate success rate percentage."""
         if total == 0:
             return 0.0
-        return (passed / total) * 100
-
+        return round((passed / total) * 100, 2)
+    
     @staticmethod
-    def format_timestamp(dt: datetime = None, format: str = "%Y-%m-%d %H:%M:%S") -> str:
+    def format_timestamp(
+        dt: Optional[datetime] = None, 
+        format_str: str = "%Y-%m-%d %H:%M:%S"
+    ) -> str:
         """Format timestamp for logging."""
         if dt is None:
             dt = datetime.now()
-        return dt.strftime(format)
+        return dt.strftime(format_str)
