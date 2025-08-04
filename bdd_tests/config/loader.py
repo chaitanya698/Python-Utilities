@@ -1,18 +1,11 @@
 import os
-import json
-import tempfile
 from pathlib import Path
-from typing import Optional, Dict, Any
-from dotenv import load_dotenv
-from cryptography.hazmat.primitives.serialization import (
-    pkcs12, Encoding, PrivateFormat, NoEncryption
-)
+import tempfile
+from cryptography.hazmat.primitives.serialization import pkcs12, Encoding, PrivateFormat, NoEncryption
 from cryptography.hazmat.backends import default_backend
 
 from .settings import Settings
-from .config_validator import ConfigValidator
 from utils.logger_config import get_logger
-
 
 class ConfigLoader:
     """Handles configuration loading and certificate processing."""
@@ -23,22 +16,14 @@ class ConfigLoader:
         self._temp_files: list[str] = []
     
     def load(self) -> Settings:
-        """Load configuration with proper precedence."""
+        """Load configuration using Pydantic's built-in capabilities."""
         if self._settings:
             return self._settings
         
-        # Determine environment
-        environment = os.getenv("ENVIRONMENT", "qa").lower()
-        self.logger.info(f"Loading configuration for environment: {environment}")
+        # The environment should be set by pytest before this is called.
+        self.logger.info(f"Loading configuration for environment: {os.getenv('ENVIRONMENT', 'qa')}")
         
-        # Load environment-specific configuration
-        self._load_env_file(environment)
-        self._load_json_config(environment)
-        
-        # Validate required environment variables
-        ConfigValidator.validate_required_vars()
-        
-        # Create settings instance
+        # Instantiate Settings. Pydantic now handles the .env file loading automatically.
         self._settings = Settings()
         
         # Process certificate if needed
@@ -49,35 +34,8 @@ class ConfigLoader:
         
         return self._settings
     
-    def _load_env_file(self, environment: str) -> None:
-        """Load environment-specific .env file."""
-        env_files = [
-            Path(f".env.{environment}"),
-            Path(".env"),
-        ]
-        
-        for env_file in env_files:
-            if env_file.exists():
-                load_dotenv(dotenv_path=env_file, override=False)
-                self.logger.info(f"Loaded environment file: {env_file}")
-                return
-        
-        self.logger.warning("No environment file found. Using system environment variables.")
-    
-    def _load_json_config(self, environment: str) -> None:
-        """Load JSON configuration if exists."""
-        config_file = Path(f"config/{environment}.json")
-        
-        if config_file.exists():
-            with open(config_file, 'r') as f:
-                config_data = json.load(f)
-            
-            # Set environment variables from JSON config
-            for key, value in config_data.items():
-                if not os.getenv(key):
-                    os.environ[key] = str(value)
-            
-            self.logger.info(f"Loaded JSON config: {config_file}")
+    # The _load_env_file and _load_json_config methods are no longer needed
+    # and can be removed.
     
     def _process_certificate(self) -> None:
         """Extract PEM files from PFX certificate."""
@@ -85,8 +43,13 @@ class ConfigLoader:
             raise ValueError("Certificate path not configured")
         
         if not Path(self._settings.CERT_PFX_PATH).exists():
-            raise ValueError(f"Certificate file not found: {self._settings.CERT_PFX_PATH}")
-        
+            # Try to resolve path relative to project root
+            project_root = Path(__file__).resolve().parent.parent.parent
+            cert_path = project_root / self._settings.CERT_PFX_PATH
+            if not cert_path.exists():
+                raise ValueError(f"Certificate file not found at: {self._settings.CERT_PFX_PATH} or {cert_path}")
+            self._settings.CERT_PFX_PATH = str(cert_path)
+
         self.logger.info("Processing PFX certificate...")
         
         try:
@@ -99,10 +62,7 @@ class ConfigLoader:
                 default_backend()
             )
             
-            # Create temporary PEM files
-            key_file = tempfile.NamedTemporaryFile(
-                delete=False, suffix='_key.pem', mode='w+b'
-            )
+            key_file = tempfile.NamedTemporaryFile(delete=False, suffix='_key.pem', mode='w+b')
             key_data = private_key.private_bytes(
                 encoding=Encoding.PEM,
                 format=PrivateFormat.TraditionalOpenSSL,
@@ -113,9 +73,7 @@ class ConfigLoader:
             self._settings.KEY_PEM_PATH = key_file.name
             self._temp_files.append(key_file.name)
             
-            cert_file = tempfile.NamedTemporaryFile(
-                delete=False, suffix='_cert.pem', mode='w+b'
-            )
+            cert_file = tempfile.NamedTemporaryFile(delete=False, suffix='_cert.pem', mode='w+b')
             cert_file.write(certificate.public_bytes(Encoding.PEM))
             cert_file.close()
             self._settings.CERT_PEM_PATH = cert_file.name
@@ -129,20 +87,9 @@ class ConfigLoader:
     
     def _log_configuration(self) -> None:
         """Log configuration without sensitive information."""
-        safe_config = {
-            "environment": self._settings.ENVIRONMENT,
-            "api_base_url": self._settings.API_BASE_URL,
-            "api_timeout": self._settings.API_TIMEOUT,
-            "db_host": self._settings.DB_HOST,
-            "db_port": self._settings.DB_PORT,
-            "log_level": self._settings.LOG_LEVEL,
-            "ssl_verification": self._settings.VERIFY_SSL,
-            "feature_flags": {
-                "detailed_logging": self._settings.ENABLE_DETAILED_LOGGING,
-                "db_query_logging": self._settings.ENABLE_DB_QUERY_LOGGING
-            }
-        }
-        self.logger.info(f"Configuration loaded: {safe_config}")
+        if self._settings:
+            safe_config = self._settings.model_dump(exclude={'DB_PASSWORD', 'CERT_PASSWORD'})
+            self.logger.info(f"Configuration loaded: {safe_config}")
     
     def cleanup(self) -> None:
         """Clean up temporary files."""
