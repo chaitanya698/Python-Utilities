@@ -1,163 +1,142 @@
-# conftest.py
-
 import pytest
 import os
-import html
 import platform
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, List
+import atexit
 
-import pytest_html
-
-# Optimized: Import helpers and utilities from other modules
-from utils.csv_reader import load_csv_data
-from utils.report_helpers import StepLogCapture, get_report_css, get_report_js
+from config.config_loader import get_config, cleanup_config
 from config.settings import Settings
+from core.api.chatbot_client import ChatbotAPIClient
+from core.database.db_manager import DatabaseManager
+from core.database.db_operations import DatabaseOperations
+from core.utils.data_loader import DataLoader
+from core.utils.logger import get_logger, LoggerSetup
+from reporting.report_generator import BusinessReportGenerator
 
-# --- Pytest Core Hooks ---
+# Global test results for reporting
+_test_results: List[Dict[str, Any]] = []
+_test_start_time = datetime.now()
 
 def pytest_addoption(parser):
-    """Adds custom command-line options for all runtime configurations."""
-    # Environment
-    parser.addoption("--env", action="store", default="qa", help="Environment to run tests against")
-    
-    # Database Credentials
-    parser.addoption("--db-host", action="store", help="Database host")
-    parser.addoption("--db-port", action="store", help="Database port")
-    parser.addoption("--db-user", action="store", help="Database user")
-    parser.addoption("--db-password", action="store", help="Database password")
-    parser.addoption("--db-service-name", action="store", help="Oracle service name")
-
-    # Certificate Credentials
-    parser.addoption("--cert-pfx-path", action="store", help="Path to the .pfx certificate file")
-    parser.addoption("--cert-password", action="store", help="Password for the .pfx certificate file")
-
+    """Add command-line options for runtime configuration."""
+    parser.addoption("--env", action="store", default="qa",
+    help="Environment to run tests against (development/qa/staging/production)")
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_configure(config):
-    """Configures the test environment and collects metadata for the report."""
-    os.environ["TEST_ENV"] = config.getoption("--env")
-    
-    # Set environment variables from command-line options
-    cli_options = {
-        "DB_HOST": config.getoption("--db-host"),
-        "DB_PORT": config.getoption("--db-port"),
-        "DB_USER": config.getoption("--db-user"),
-        "DB_PASSWORD": config.getoption("--db-password"),
-        "DB_SERVICE_NAME": config.getoption("--db-service-name"),
-        "CERT_PFX_PATH": config.getoption("--cert-pfx-path"),
-        "CERT_PASSWORD": config.getoption("--cert-password"),
-    }
-    for key, value in cli_options.items():
-        if value is not None:
-            os.environ[key] = str(value)
+    """Configure test environment before test run."""
+    # Set environment
+    os.environ["ENVIRONMENT"] = config.getoption("--env")
 
-    from utils import logger_config
-    logger_config.setup_logging()
-    
-    config._metadata = {
-        "Python Version": platform.python_version(),
-        "Platform": platform.system(),
-        "Environment": config.getoption("--env"),
-        "Report Generated On": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
-    config._html_report_assets_added = False
+    # Setup logging
+    LoggerSetup.setup(log_level=os.getenv("LOG_LEVEL", "INFO"))
 
-def pytest_bdd_generate_tests(metafunc):
-    """Dynamically generates parameterized tests from the CSV file."""
-    if "test_data_row" in metafunc.fixturenames:
-        if "complaint_capture.feature" in metafunc.definition.obj.__scenario__.feature.filename:
-            all_test_data = load_csv_data("complaint_data.csv")
-            test_case_ids = [row.get("test_case_id", "Unnamed-TC") for row in all_test_data]
-            metafunc.parametrize("test_data_row", all_test_data, ids=test_case_ids)
+    logger = get_logger(__name__)
+    logger.info(f"Starting test run in {os.environ['ENVIRONMENT']} environment")
 
-# --- Fixtures ---
+# Register cleanup
+atexit.register(cleanup_config)
+def pytest_sessionfinish(session, exitstatus): 
+    """Generate report after all tests complete.""" logger = get_logger(name)
+    if _test_results:
+                try:
+                    # Generate business report
+                    report_gen = BusinessReportGenerator()
+                    metadata = {
+                        'environment': os.getenv('ENVIRONMENT', 'unknown'),
+                        'platform': platform.system(),
+                        'python_version': platform.python_version(),
+                        'total_duration': (datetime.now() - _test_start_time).total_seconds()
+                    }
+                    
+                    report_path = report_gen.generate_report(_test_results, metadata)
+                    logger.info(f"Business report generated: {report_path}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to generate report: {e}")
 
 @pytest.fixture(scope="session")
 def config() -> Settings:
-    """
-    Loads the application configuration lazily and once per session.
-    This fixture ensures that config loading happens *after* pytest_configure
-    has set up the necessary environment variables, preventing validation errors.
-    """
-    from config.loader import load_and_get_config
-    return load_and_get_config()
+        """Load configuration once per session."""
+        return get_config()
+
+@pytest.fixture(scope="session")
+def api_client(config: Settings) -> ChatbotAPIClient:
+    """Create API client for the session."""
+    client = ChatbotAPIClient(config)
+    yield client
+    client.close()
+
+@pytest.fixture(scope="session")
+def db_manager(config: Settings) -> DatabaseManager:
+    """Create database manager for the session."""
+    manager = DatabaseManager(config)
+    yield manager
+    manager.close()
+
+@pytest.fixture(scope="session")
+def db_operations(db_manager: DatabaseManager) -> DatabaseOperations:
+    """Create database operations instance."""
+    return DatabaseOperations(db_manager)
+
+@pytest.fixture(scope="session")
+def data_loader() -> DataLoader:
+    """Create data loader instance."""
+    return DataLoader()
 
 @pytest.fixture(scope="function")
-def chatbot_context() -> Dict[str, Any]:
-    """Provides a clean dictionary for sharing state within a single test scenario."""
-    return {}
+def test_context() -> Dict[str, Any]:
+    """Provide clean context for each test."""
+    return {
+    'start_time': datetime.now(),
+    'test_data': {},
+    'results': {}
+    }
 
-# --- HTML Report Generation Hooks ---
-def pytest_html_report_title(report):
-    report.title = "Chatbot Complaint AI - Interactive BDD Report"
-
+# --- Test Result Collection ---
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
+    """Collect test results for business reporting."""
     outcome = yield
     report = outcome.get_result()
-    if report.when == 'call':
-        setattr(report, 'report_status', report.outcome)
-    if report.when == "call" and hasattr(item, "bdd_step_results"):
-        steps_html = ""
-        for step_name, status, icon, logs in item.bdd_step_results:
-            escaped_logs = html.escape(logs)
-            if logs.strip():
-                steps_html += f'<details class="step-details"><summary class="step-summary {status.lower()}"><span class="status-icon">{icon}</span> {step_name}</summary><pre class="log-output">{escaped_logs}</pre></details>'
-            else:
-                steps_html += f'<div class="step-summary {status.lower()}"><span class="status-icon">{icon}</span> {step_name}</div>'
-        if steps_html:
-            report.extra.append(pytest_html.extras.html(f'<div class="scenario-steps"><h4>Scenario Steps:</h4>{steps_html}</div>'))
 
-def pytest_html_results_table_row(report, cells):
-    if hasattr(report, 'report_status'):
-        cells[1].attrib['class'] = f'result-{report.report_status}'
+    if report.when == "call":
+        test_result = {
+            'test_id': item.nodeid.split("::")[-1],
+            'description': item.name,
+            'status': report.outcome,
+            'duration': report.duration,
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        if hasattr(report, 'longrepr') and report.longrepr:
+            test_result['error'] = str(report.longrepr)
+        
+        _test_results.append(test_result)
+        
+#--- BDD-specific fixtures ---
+@pytest.fixture
+def given_api_is_available(api_client: ChatbotAPIClient, test_context: Dict[str, Any]):
+    """Ensure API is available before test."""
+    test_context['api_client'] = api_client
+    return test_context
 
-@pytest.hookimpl(tryfirst=True)
-def pytest_bdd_before_scenario(request, feature, scenario):
-    request.node.bdd_step_results = []
+@pytest.fixture
+def given_test_data_loaded(data_loader: DataLoader, test_context: Dict[str, Any],
+    test_data_row: Dict[str, Any]):
+    """Load test data for scenario."""
+    test_context['test_data'] = test_data_row
+    test_context['data_loader'] = data_loader
+    return test_context
 
-@pytest.hookimpl(tryfirst=True)
-def pytest_bdd_before_step(request, step):
-    capturer = StepLogCapture()
-    request.node.step_log_capturer = capturer
-    capturer.__enter__()
+#--- Parametrization ---
+def pytest_generate_tests(metafunc):
+    """Generate parameterized tests from CSV data."""
+    if "test_data_row" in metafunc.fixturenames:
+        data_loader = DataLoader()
+        test_data = data_loader.load_csv("complaint_data.csv")
 
-@pytest.hookimpl(tryfirst=True)
-def pytest_bdd_after_step(request, step, step_result):
-    item = request.node
-    capturer = item.step_log_capturer
-    capturer.__exit__(None, None, None)
-    logs = capturer.get_logs()
-    status, icon = ("Failed", "❌") if step_result.failed else ("Passed", "✅")
-    item.bdd_step_results.append((step.name, status, icon, logs))
-
-def pytest_html_results_summary(prefix, summary, postfix):
-    meta_html = "<h3>Execution Summary</h3><table class='meta-table'>"
-    if hasattr(summary.config, '_metadata'):
-        for key, value in summary.config._metadata.items():
-            meta_html += f"<tr><td>{key}</td><td>{value}</td></tr>"
-    meta_html += "</table>"
-    
-    passed = len(summary.get("passed", []))
-    failed = len(summary.get("failed", []))
-    skipped = len(summary.get("skipped", []))
-    total = passed + failed + skipped
-
-    filter_html = f"""
-        <h3>Filter Results</h3>
-        <div class="filter-controls">
-            <button id="filter-all" class="active" onclick="filterResults('all')">All ({total})</button>
-            <button id="filter-passed" onclick="filterResults('passed')">Passed ({passed})</button>
-            <button id="filter-failed" onclick="filterResults('failed')">Failed ({failed})</button>
-            <button id="filter-skipped" onclick="filterResults('skipped')">Skipped ({skipped})</button>
-        </div>
-    """
-    prefix.extend([pytest_html.extras.html(f"<div class='meta-container'>{meta_html}</div>")])
-    prefix.extend([pytest_html.extras.html(f"<div class='filter-container'>{filter_html}</div>")])
-
-def pytest_html_style(report):
-    if not getattr(report.config, '_html_report_assets_added', False):
-        report.extra.append(pytest_html.extras.html(f"<style>{get_report_css()}</style>"))
-        report.extra.append(pytest_html.extras.html(f"<script>{get_report_js()}</script>"))
-        report.config._html_report_assets_added = True
+    if test_data:
+            test_ids = [row.get("test_case_id", f"TC_{idx}") for idx, row in enumerate(test_data)]
+            metafunc.parametrize("test_data_row", test_data, ids=test_ids)

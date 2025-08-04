@@ -1,37 +1,72 @@
-# bdd_tests/utils/logger_config.py
-
 import logging
 import sys
-from bdd_tests.config.settings import settings
+import os
+from pathlib import Path
+from datetime import datetime
+from logging.handlers import RotatingFileHandler
+from typing import Optional
 
-def setup_logging():
-    """
-    Configures logging for the entire application based on the level in settings.
-    Ensures it only runs once.
-    """
-    # Get the root logger
-    root_logger = logging.getLogger()
-    
-    # Avoid adding handlers if they already exist
-    if not root_logger.handlers:
-        log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
-        root_logger.setLevel(log_level)
+class LoggerSetup:
+    """Centralized logger configuration for the framework."""
+
+    _initialized = False
+    _log_dir = Path("logs")
+
+    @classmethod
+    def setup(cls, log_level: str = "INFO", log_file: Optional[str] = None):
+        """Configure logging for the entire application."""
+        if cls._initialized:
+            return
+            
+        # Create logs directory
+        cls._log_dir.mkdir(exist_ok=True)
         
-        # Create a handler to print to console
-        handler = logging.StreamHandler(sys.stdout)
-        handler.setLevel(log_level)
+        # Get root logger
+        root_logger = logging.getLogger()
+        root_logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
         
-        # Create a formatter and add it to the handler
-        formatter = logging.Formatter(
-            "%(asctime)s [%(levelname)s] [%(name)s:%(lineno)d] - %(message)s",
+        # Remove existing handlers
+        for handler in root_logger.handlers[:]:
+            root_logger.removeHandler(handler)
+        
+        # Console handler
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(getattr(logging, log_level.upper()))
+        console_formatter = logging.Formatter(
+            "%(asctime)s [%(levelname)-8s] [%(name)-20s] - %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S"
         )
-        handler.setFormatter(formatter)
+        console_handler.setFormatter(console_formatter)
+        root_logger.addHandler(console_handler)
         
-        # Add the handler to the root logger
-        root_logger.addHandler(handler)
+        # File handler
+        if log_file is None:
+            log_file = cls._log_dir / f"automation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
         
-        logging.info(f"Logging configured with level: {settings.LOG_LEVEL}")
+        file_handler = RotatingFileHandler(
+            log_file,
+            maxBytes=10 * 1024 * 1024,  # 10MB
+            backupCount=5
+        )
+        file_handler.setLevel(logging.DEBUG)  # File gets all logs
+        file_formatter = logging.Formatter(
+            "%(asctime)s [%(levelname)-8s] [%(name)-30s:%(lineno)-4d] - %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S.%f"
+        )
+        file_handler.setFormatter(file_formatter)
+        root_logger.addHandler(file_handler)
+        
+        # Suppress noisy loggers
+        logging.getLogger("urllib3").setLevel(logging.WARNING)
+        logging.getLogger("requests").setLevel(logging.WARNING)
+        
+        cls._initialized = True
+        root_logger.info(f"Logging initialized - Level: {log_level}, File: {log_file}")
+    def get_logger(name: str) -> logging.Logger:
+        """Get a logger instance for a module."""
+        return logging.getLogger(name)
 
-# Run setup when the module is imported
-setup_logging()
+    # Initialize on import with defaults
+    
+LoggerSetup.setup(log_level=os.getenv("LOG_LEVEL", "INFO"))
+

@@ -1,102 +1,149 @@
-# utils/api_service.py
-
 import requests
-import logging
 import json
+import uuid
+from typing import Dict, Any, Optional
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from typing import Dict, Any
+from requests.exceptions import RequestException, HTTPError
 
-# Import the Settings model for type hinting, assuming it's in config/settings.py
 from config.settings import Settings
+from core.utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
-
-class ChatbotAPIService:
-    """A robust service class to handle all interactions with the Chatbot API."""
+class ChatbotAPIClient:
+    """Enterprise-grade API client with retry logic and comprehensive error handling."""
 
     def __init__(self, config: Settings):
-        """
-        Initializes the service with a persistent HTTP session and certificate handling.
-        
-        Args:
-            config (Settings): The fully loaded and processed configuration object,
-                               which includes paths to the temporary PEM files if a PFX
-                               was processed by the loader.
-        """
         self.config = config
-        self.base_url = self.config.API_BASE_URL
+        self.logger = get_logger(__name__)
+        self.base_url = config.API_BASE_URL
         self.session = self._create_session()
-        logger.info(f"ChatbotAPIService initialized for base URL: {self.base_url}")
-
+        
     def _create_session(self) -> requests.Session:
-        """Configures and returns a requests Session object with certificate handling."""
+        """Create a configured session with retry logic and certificate handling."""
         session = requests.Session()
         
-        # Configure retry strategy for transient network errors (e.g., 502, 503, 504)
+        # Configure retry strategy
         retry_strategy = Retry(
-            total=3,
+            total=self.config.API_RETRY_COUNT,
             backoff_factor=1,
-            status_forcelist=[502, 503, 504]
+            status_forcelist=[502, 503, 504],
+            allowed_methods=["GET", "POST", "PUT", "DELETE"]
         )
         adapter = HTTPAdapter(max_retries=retry_strategy)
         session.mount("https://", adapter)
         session.mount("http://", adapter)
-
-        # Configure SSL with the client-side certificate.
-        # The loader.py has already processed the PFX into temporary PEM files.
-        # We just need to use the paths that are now stored in the config object.
+        
+        # Configure SSL certificate
         if self.config.CERT_PEM_PATH and self.config.KEY_PEM_PATH:
             session.cert = (self.config.CERT_PEM_PATH, self.config.KEY_PEM_PATH)
-            logger.info(f"Session configured with client certificate authentication using cert: {self.config.CERT_PEM_PATH}")
-        else:
-            logger.warning("No client certificate paths found in config. Proceeding without certificate authentication.")
-
+            self.logger.info("Session configured with client certificate")
+        
+        # Set default headers
         session.headers.update({
             'Content-Type': 'application/json',
-            'Accept': 'application/json'
+            'Accept': 'application/json',
+            'User-Agent': 'ChatbotAutomation/1.0'
         })
+        
+        # Configure SSL verification
+        session.verify = self.config.VERIFY_SSL
+        
         return session
 
-    def _send_request(self, payload: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
-        """A private, reusable method to send POST requests and handle responses."""
-        endpoint = f"{self.base_url}/api/agentic-chat/v1"
-        correlation_id = headers.get('CLIENT-CORRELATION-ID', 'N/A')
+    def _log_request(self, method: str, url: str, headers: Dict, data: Any):
+        """Log API request details."""
+        if self.config.ENABLE_DETAILED_LOGGING:
+            self.logger.debug(f"API Request: {method} {url}")
+            self.logger.debug(f"Headers: {self._sanitize_headers(headers)}")
+            self.logger.debug(f"Payload: {json.dumps(data, indent=2)}")
+        else:
+            self.logger.info(f"API Request: {method} {url}")
+
+    def _log_response(self, response: requests.Response, correlation_id: str):
+        """Log API response details."""
+        if self.config.ENABLE_DETAILED_LOGGING:
+            self.logger.debug(f"[{correlation_id}] Response Status: {response.status_code}")
+            self.logger.debug(f"[{correlation_id}] Response Body: {response.text}")
+        else:
+            self.logger.info(f"[{correlation_id}] Response Status: {response.status_code}")
+
+    def _sanitize_headers(self, headers: Dict) -> Dict:
+        """Remove sensitive information from headers for logging."""
+        sanitized = headers.copy()
+        sensitive_keys = ['authorization', 'x-api-key', 'cookie']
+        for key in sensitive_keys:
+            if key.lower() in {k.lower() for k in sanitized}:
+                sanitized[key] = '***REDACTED***'
+        return sanitized
+
+    def _make_request(self, method: str, endpoint: str, data: Optional[Dict] = None, 
+                    headers: Optional[Dict] = None) -> Dict[str, Any]:
+        """Make HTTP request with error handling."""
+        url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        correlation_id = headers.get('CLIENT-CORRELATION-ID', str(uuid.uuid4())) if headers else str(uuid.uuid4())
         
-        logger.info(f"[{correlation_id}] Sending POST request to endpoint: {endpoint}")
-        logger.debug(f"[{correlation_id}] Request Headers: {headers}")
-        logger.debug(f"[{correlation_id}] Request Payload: {json.dumps(payload, indent=2)}")
-
+        request_headers = self.session.headers.copy()
+        if headers:
+            request_headers.update(headers)
+        
+        self._log_request(method, url, request_headers, data)
+        
         try:
-            # For dev/test environments, it's common to disable SSL verification.
-            # In a production-ready framework, this could be controlled by a config flag.
-            response = self.session.post(endpoint, json=payload, headers=headers, timeout=45, verify=False)
+            response = self.session.request(
+                method=method,
+                url=url,
+                json=data,
+                headers=request_headers,
+                timeout=self.config.API_TIMEOUT
+            )
             
-            logger.info(f"[{correlation_id}] Received response with status: {response.status_code}")
-            logger.debug(f"[{correlation_id}] Response Body: {response.text}")
-            
-            # This will raise an HTTPError for bad responses (4xx or 5xx)
+            self._log_response(response, correlation_id)
             response.raise_for_status()
+            
             return response.json()
-        except requests.exceptions.HTTPError as http_err:
-            logger.error(f"[{correlation_id}] HTTP error occurred: {http_err} - Response: {http_err.response.text}")
+            
+        except HTTPError as e:
+            self.logger.error(f"[{correlation_id}] HTTP Error: {e}")
+            self.logger.error(f"[{correlation_id}] Response: {e.response.text if e.response else 'No response'}")
             raise
-        except requests.exceptions.RequestException as req_err:
-            logger.error(f"[{correlation_id}] A critical request error occurred: {req_err}")
+        except RequestException as e:
+            self.logger.error(f"[{correlation_id}] Request Error: {e}")
+            raise
+        except Exception as e:
+            self.logger.error(f"[{correlation_id}] Unexpected Error: {e}")
             raise
 
-    def initiate_chat(self, initial_request_data: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
-        """Initiates a new chat conversation."""
-        initial_request_data['conversationId'] = 'initial'
-        return self._send_request(initial_request_data, headers)
+    def initiate_chat(self, request_data: Dict[str, Any], correlation_id: Optional[str] = None) -> Dict[str, Any]:
+        """Initiate a new chat conversation."""
+        headers = {
+            'CLIENT-CORRELATION-ID': correlation_id or f"INIT-{uuid.uuid4()}"
+        }
+        
+        request_data['conversationId'] = 'initial'
+        
+        self.logger.info(f"Initiating chat with correlation ID: {headers['CLIENT-CORRELATION-ID']}")
+        return self._make_request('POST', '/api/agentic-chat/v1', data=request_data, headers=headers)
 
-    def send_message(self, conversation_id: str, chat_text: str, action: str, headers: Dict[str, str]) -> Dict[str, Any]:
-        """Sends a subsequent message in an existing conversation."""
+    def send_message(self, conversation_id: str, message: str, action: str = "proceed",
+                    correlation_id: Optional[str] = None) -> Dict[str, Any]:
+        """Send a message in an existing conversation."""
+        headers = {
+            'CLIENT-CORRELATION-ID': correlation_id or f"MSG-{uuid.uuid4()}"
+        }
+        
         payload = {
-            "channelID": "BBVA", # This could be parameterized if needed
+            "channelID": "BBVA",
             "conversationID": conversation_id,
             "requestType": "ComplaintCapture",
-            "chatText": chat_text,
+            "chatText": message,
             "action": action
         }
-        return self._send_request(payload, headers)
+        
+        self.logger.info(f"Sending message to conversation: {conversation_id}")
+        return self._make_request('POST', '/api/agentic-chat/v1', data=payload, headers=headers)
+
+    def close(self):
+        """Close the session and clean up resources."""
+        if self.session:
+            self.session.close()
+            self.logger.info("API client session closed")
