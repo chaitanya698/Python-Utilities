@@ -1,27 +1,44 @@
-from pydantic import BaseModel, Field, validator
-from typing import Optional
 import os
+from pathlib import Path
+from typing import Optional
 
+from pydantic import Field, validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
-class Settings(BaseModel):
-    """Application configuration settings using Pydantic for validation."""
+# Get the project's root directory (which is 3 levels up from this file's location)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+# Determine the environment from the OS, defaulting to 'qa'
+ENVIRONMENT = os.getenv("ENVIRONMENT", "qa").lower()
+ENV_FILE = PROJECT_ROOT / f".env.{ENVIRONMENT}"
+
+class Settings(BaseSettings):
+    """Application configuration settings that automatically load from .env files."""
+
+    # This config tells Pydantic where to find the .env file
+    model_config = SettingsConfigDict(
+        env_file=ENV_FILE if ENV_FILE.exists() else None,
+        env_file_encoding='utf-8',
+        case_sensitive=False,
+        extra='ignore' # Prevents errors if .env file has extra variables
+    )
     
     # Environment
-    ENVIRONMENT: str = Field(default="qa")
+    ENVIRONMENT: str = Field(default=ENVIRONMENT)
     
     # API Configuration
     API_BASE_URL: str
-    API_TIMEOUT: int = Field(default=45)
-    API_RETRY_COUNT: int = Field(default=3)
+    API_TIMEOUT: int = 45
+    API_RETRY_COUNT: int = 3
     
     # Database Configuration
     DB_HOST: str
-    DB_PORT: int = Field(default=1521)
+    DB_PORT: int = 1521
     DB_USER: str
     DB_PASSWORD: str
     DB_SERVICE_NAME: str
-    DB_POOL_SIZE: int = Field(default=10)
-    DB_MAX_OVERFLOW: int = Field(default=20)
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 20
     
     # Certificate Configuration
     CERT_PFX_PATH: str
@@ -30,21 +47,12 @@ class Settings(BaseModel):
     KEY_PEM_PATH: Optional[str] = None
     
     # Logging Configuration
-    LOG_LEVEL: str = Field(default="INFO")
-    LOG_FORMAT: str = Field(
-        default="%(asctime)s [%(levelname)s] [%(name)s:%(lineno)d] - %(message)s"
-    )
-    LOG_FILE_PATH: Optional[str] = None
+    LOG_LEVEL: str = "INFO"
     
     # Feature Flags
-    ENABLE_DETAILED_LOGGING: bool = Field(default=False)
-    ENABLE_DB_QUERY_LOGGING: bool = Field(default=False)
-    VERIFY_SSL: bool = Field(default=True)
-    
-    class Config:
-        case_sensitive = False
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    ENABLE_DETAILED_LOGGING: bool = False
+    ENABLE_DB_QUERY_LOGGING: bool = False
+    VERIFY_SSL: bool = True
     
     @validator("ENVIRONMENT")
     def validate_environment(cls, v):
