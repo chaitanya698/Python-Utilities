@@ -1,97 +1,78 @@
-import contextlib
-from typing import Generator, Optional, Dict, Any
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.pool import QueuePool
-from sqlalchemy.engine import Engine
+import oracledb
+import logging
+from bdd_tests.config.settings import settings
 
-from config.settings import Settings
-from core.utils.logger import get_logger
+# Configure logger for the database manager
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class DatabaseManager:
-    """Enterprise-grade database connection manager with connection pooling."""
+    """
+    Manages the connection to the Oracle database.
+    This class handles creating and closing the database connection pool.
+    """
+    _pool = None
 
-    def __init__(self, config: Settings):
-        self.config = config
-        self.logger = get_logger(__name__)
-        self._engine: Optional[Engine] = None
-        self._session_factory: Optional[sessionmaker] = None
-        self._initialize()
+    @classmethod
+    def initialize_pool(cls):
+       
+        if cls._pool:
+            logger.info("Database pool is already initialized.")
+            return
 
-    def _initialize(self):
-        """Initialize database engine with connection pooling."""
         try:
-            # Build connection URL
-            db_url = self.config.DB_CONNECTION_STRING
-            
-            if not db_url:
-                raise ValueError("Database connection string not configured")
-            
-            # Create engine with optimized settings
-            self._engine = create_engine(
-                db_url,
-                poolclass=QueuePool,
-                pool_size=self.config.DB_POOL_SIZE,
-                max_overflow=self.config.DB_MAX_OVERFLOW,
-                pool_timeout=30,
-                pool_recycle=1800,
-                pool_pre_ping=True,
-                echo=self.config.ENABLE_DB_QUERY_LOGGING
+            # The "not a registered listener" error is almost always due to an
+            # incorrect DSN. The `oracledb.makedsn` function helps build it correctly.
+            dsn = oracledb.makedsn(
+                settings.DB_HOST,
+                settings.DB_PORT,
+                service_name=settings.DB_SERVICE_NAME
             )
-            
-            # Create session factory
-            self._session_factory = sessionmaker(
-                bind=self._engine,
-                autocommit=False,
-                autoflush=False
+            logger.info(f"Attempting to connect with DSN: {dsn}")
+
+            # Create a connection pool. This is more efficient than creating
+            # new connections for every test.
+            cls._pool = oracledb.create_pool(
+                user=settings.DB_USER,
+                password=settings.DB_PASSWORD,
+                dsn=dsn,
+                min=2,
+                max=5,
+                increment=1,
+                encoding="UTF-8"
             )
-            
-            # Test connection
-            with self._engine.connect() as conn:
-                result = conn.execute(text("SELECT 1 FROM DUAL"))
-                result.fetchone()
-            
-            self.logger.info(f"Database connection established: {self.config.DB_HOST}:{self.config.DB_PORT}")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to initialize database: {e}")
+            logger.info("Database connection pool initialized successfully.")
+        except oracledb.Error as e:
+            logger.error(f"Failed to initialize Oracle database pool: {e}")
+            # Re-raise the exception to fail the test run immediately if DB is not available.
             raise
 
-    @contextlib.contextmanager
-    def get_session(self) -> Generator[Session, None, None]:
-        """Get a database session with automatic cleanup."""
-        if not self._session_factory:
-            raise RuntimeError("Database not initialized")
+    @classmethod
+    def get_connection(cls):
+
+        if not cls._pool:
+            logger.error("Database pool is not initialized. Call initialize_pool() first.")
+            raise Exception("Database pool not initialized.")
         
-        session = self._session_factory()
         try:
-            yield session
-            session.commit()
-        except Exception as e:
-            session.rollback()
-            self.logger.error(f"Database transaction failed: {e}")
+            connection = cls._pool.acquire()
+            logger.info("Acquired a database connection from the pool.")
+            return connection
+        except oracledb.Error as e:
+            logger.error(f"Failed to acquire connection from pool: {e}")
             raise
-        finally:
-            session.close()
 
-    def execute_query(self, query: str, params: Optional[Dict[str, Any]] = None) -> list:
-        """Execute a query and return results."""
-        with self.get_session() as session:
-            result = session.execute(text(query), params or {})
-            return [dict(row) for row in result.mappings()]
-
-    def health_check(self) -> bool:
-        """Check database connectivity."""
-        try:
-            with self.get_session() as session:
-                session.execute(text("SELECT 1 FROM DUAL"))
-            return True
-        except Exception as e:
-            self.logger.error(f"Database health check failed: {e}")
-            return False
-
-    def close(self):
-        """Close database connections and clean up resources."""
-        if self._engine:
-            self._engine.dispose()
-            self.logger.info("Database connections closed")
+    @classmethod
+    def close_pool(cls):
+        """
+        Closes the connection pool and releases all resources.
+        This should be called once when the test suite finishes.
+        """
+        if cls._pool:
+            try:
+                cls._pool.close()
+                cls._pool = None
+                logger.info("Database connection pool closed successfully.")
+            except oracledb.Error as e:
+                logger.error(f"Error closing the database connection pool: {e}")
+                raise
