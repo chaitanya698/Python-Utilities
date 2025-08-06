@@ -17,36 +17,24 @@ class DataLoader:
         if not self.data_dir.exists():
             self.logger.warning(f"Data directory does not exist: {self.data_dir}")
     
-    def load_csv(
-        self, 
-        filename: str, 
-        encoding: str = 'utf-8'
-    ) -> List[Dict[str, Any]]:
-        """Load data from CSV file."""
-        filepath = self.data_dir / filename
-        
-        if not filepath.exists():
-            raise FileNotFoundError(f"CSV file not found: {filepath}")
-        
-        self.logger.info(f"Loading CSV data from: {filepath}")
-        
+    def load_csv_data(file_name: str) -> list:
+        # Construct the full path to the data file
+        data_path = Path(__file__).parent.parent / 'data' / file_name
+        logger.info(f"Attempting to load data from: {data_path}")
+    
+        if not data_path.exists():
+            logger.error(f"Data file not found at: {data_path}")
+            raise FileNotFoundError(f"Data file not found: {data_path}")
+    
         try:
-            records = []
-            with open(filepath, mode='r', encoding=encoding, newline='') as file:
-                reader = csv.DictReader(file)
-                for row in reader:
-                    # Clean up whitespace and convert empty strings to None
-                    cleaned_row = {
-                        k.strip(): v.strip() if v and v.strip() else None 
-                        for k, v in row.items()
-                    }
-                    records.append(cleaned_row)
-            
-            self.logger.info(f"Loaded {len(records)} records from {filename}")
-            return records
-            
+            with open(data_path, mode='r', encoding='utf-8') as infile:
+                # Use DictReader to make it easy to access columns by name
+                reader = csv.DictReader(infile)
+                data = [row for row in reader]
+                logger.info(f"Successfully loaded {len(data)} rows from {file_name}.")
+                return data
         except Exception as e:
-            self.logger.error(f"Failed to load CSV file {filename}: {e}")
+            logger.error(f"An error occurred while reading the CSV file {file_name}: {e}")
             raise
     
     def load_json(self, filename: str, dir_path: str = "resources") -> Dict[str, Any]:
