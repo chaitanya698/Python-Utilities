@@ -325,3 +325,24 @@ def verify_final_response(test_context: Dict[str, Any]) -> None:
     interaction_id = match.group(0)
     test_context['interaction_id'] = interaction_id
     logger.info(f"Verified final response with Interaction ID: {interaction_id}")
+
+
+@then('the chat history should be correctly stored in the database')
+def verify_chat_history_in_db(test_context: Dict[str, Any], db_utils) -> None:
+    """Verify that the chat history has been stored in the database."""
+    conversation_id = test_context.get('conversation_id')
+    assert conversation_id, "Conversation ID not found in test context"
+
+    chat_history = db_utils.get_chat_history(conversation_id)
+    assert chat_history, f"No chat history found for conversation ID: {conversation_id}"
+
+    # Example validation: Check if the user's complaint details are in the chat history
+    complaint_details = test_context['test_data'].get('complaint_details')
+    found_details = False
+    for message in chat_history:
+        if complaint_details in message.get('user_message', ''):
+            found_details = True
+            break
+    
+    assert found_details, f"Complaint details not found in chat history for conversation: {conversation_id}"
+    logger.info(f"Verified chat history in the database for conversation: {conversation_id}")
