@@ -26,3 +26,4 @@ Feature: Complaint Capture Workflow
         Then the API response should prompt for complaint classification
         When the user responds with the complaint classification
         Then the final response should contain a confirmation and a valid Interaction ID
+        And the chat history should be correctly stored in the database
