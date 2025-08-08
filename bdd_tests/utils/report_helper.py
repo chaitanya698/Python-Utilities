@@ -36,7 +36,7 @@ def get_report_css() -> str:
         .meta-table { width: 100%; border-collapse: collapse; }
         .meta-table td { padding: 8px; border-bottom: 1px solid #f0f0f0; }
         .meta-table td:first-child { font-weight: bold; color: #555; width: 150px; }
-        .filter-controls button { background-color: #007bff; color: white; border: none; padding: 8px 15px; margin-right: 10px; border-radius: 5px; cursor: pointer; font-size: 14px; transition: background-color 0.2s; }
+        .filter-controls button { background-color: #007bff; color: white; border: none; padding: 8px 15px; margin-right: 10px; border-radius: 5px; cursor: pointer; font-size: 14px; transition: background-color: 0.2s; }
         .filter-controls button:hover { background-color: #0056b3; }
         .filter-controls button.active { background-color: #28a745; }
         .scenario-steps { font-family: monospace; margin-top: 15px; }
