@@ -1,32 +1,111 @@
 import os
-from dotenv import load_dotenv
+import tempfile
 from pathlib import Path
-import logging
+from typing import Optional
 
-# Configure logger for the loader
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives.serialization import pkcs12, Encoding, PrivateFormat, NoEncryption
 
-def load_settings(env: str = 'qa'):
-    
-    # Set the environment variable so that other parts of the app, including
-    # the Pydantic settings class, know which environment is active.
-    
-    os.environ['ENV'] = env
-    logger.info(f"Environment set to: {env}")
+from config.settings import Settings
+from utils.logger_config import get_logger
 
-    # Construct the path to the .env file.
-    # We assume .env files are in the project root directory (bdd_tests).
-    project_root = Path(__file__).parent.parent 
-    dotenv_path = project_root / f".env.{env}"
 
-    if dotenv_path.exists():
-        # `load_dotenv` will load the variables from the specified file into the environment.
-        # The `override=True` flag ensures that values from the .env file will
-        # overwrite any existing environment variables.
-        load_dotenv(dotenv_path=dotenv_path, override=True)
-        logger.info(f"Successfully loaded settings from: {dotenv_path}")
-    else:
-        logger.error(f"Environment file not found at: {dotenv_path}")
-        raise FileNotFoundError(f"Could not find the environment file for '{env}' at {dotenv_path}")
+class ConfigLoader:
+    """Handles configuration loading and certificate processing."""
 
+    def __init__(self) -> None:
+        self.logger = get_logger(__name__)
+        self.settings: Optional[Settings] = None
+        self._temp_files: list[str] = []
+
+    def load(self) -> Settings:
+        """Load configuration using Pydantic's built-in capabilities."""
+        if self._settings:
+            return self._settings
+
+        self.logger.info(f"Loading configuration for environment: {os.getenv('ENVIRONMENT', 'qa')}")
+
+        # Instantiate Settings. Pydantic now handles the .env file loading automatically.
+        self._settings = Settings()
+
+        # Process certificate if needed
+        self._process_certificate()
+
+        # Log configuration (without sensitive data)
+        self._log_configuration()
+
+        return self._settings
+
+    def _process_certificate(self) -> None:
+        """Extract PEM files from PFX certificate."""
+        if not self.settings.CERT_PFX_PATH:
+            raise ValueError("Certificate path not configured")
+
+        # Try to resolve path relative to project root
+        project_root = Path(__file__).resolve().parent.parent.parent
+        cert_path = project_root / self._settings.CERT_PFX_PATH
+
+        if not cert_path.exists():
+            raise ValueError(f"Certificate file not found at: {self._settings.CERT_PFX_PATH} or {cert_path}")
+        self._settings.CERT_PFX_PATH = str(cert_path)
+
+        self.logger.info("Processing PFX certificate...")
+        try:
+            with open(self._settings.CERT_PFX_PATH, 'rb') as pfx_file:
+                pfx_data = pfx_file.read()
+
+            private_key, certificate, _ = pkcs12.load_key_and_certificates(
+                pfx_data,
+                self._settings.CERT_PRD.encode(),
+                default_backend()
+            )
+
+            key_file = tempfile.NamedTemporaryFile(delete=False, suffix='_key.pem', mode='w+b')
+            key_data = private_key.private_bytes(
+                encoding=Encoding.PEM,
+                format=PrivateFormat.TraditionalOpenSSL,
+                encryption_algorithm=NoEncryption()
+            )
+            key_file.write(key_data)
+            key_file.close()
+            self._settings.KEY_PEM_PATH = key_file.name
+            self._temp_files.append(key_file.name)
+
+            cert_file = tempfile.NamedTemporaryFile(delete=False, suffix='_cert.pem', mode='w+b')
+            cert_file.write(certificate.public_bytes(Encoding.PEM))
+            cert_file.close()
+            self.settings.CERT_PEM_PATH = cert_file.name
+            self._temp_files.append(cert_file.name)
+
+            self.logger.info("Certificate processed successfully")
+        except Exception as e:
+            self.logger.error(f"Failed to process certificate: {e}")
+            raise
+
+    def _log_configuration(self) -> None:
+        """Log configuration without sensitive information."""
+        if self._settings:
+            safe_config = self._settings.model_dump(exclude={'DB_USER', 'DB_PRD', 'CERT_PRD'})
+            self.logger.info(f"Configuration loaded: {safe_config}")
+
+    def cleanup(self) -> None:
+        """Clean up temporary files."""
+        for temp_file in self._temp_files:
+            if Path(temp_file).exists():
+                try:
+                    os.remove(temp_file)
+                    self.logger.debug(f"Removed temporary file: {temp_file}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to remove temporary file {temp_file}: {e}")
+        self._temp_files.clear()
+
+# Singleton instance
+_config_loader = ConfigLoader()
+
+def get_config() -> Settings:
+    """Get the configuration settings."""
+    return _config_loader.load()
+
+def cleanup_config() -> None:
+    """Clean up configuration resources."""
+    _config_loader.cleanup()
