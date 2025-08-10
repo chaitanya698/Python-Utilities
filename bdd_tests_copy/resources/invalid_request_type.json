@@ -1,0 +1,11 @@
+{
+  "channelID": "BBVA",
+  "conversationId": "initial",
+  "dataElements": [
+    {"name": "businessName", "value": "WF"},
+    {"name": "customerFullName", "value": "John Doe"}
+  ],
+  "requestType": "Complaint",
+  "chatText": "proceed",
+  "action": "proceed"
+}
