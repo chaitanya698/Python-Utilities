@@ -1,0 +1,14 @@
+{
+  "channelID": "BBVA",
+  "conversationId": "initial",
+  "dataElements": [
+    {"name": "businessName", "value": "OtherBank"},
+    {"name": "customerFullName", "value": "Jane Smith"},
+    {"name": "country", "value": "USA"},
+    {"name": "customerPhoneNumber", "value": "1234567890"},
+    {"name": "languagePreference", "value": "es-US"}
+  ],
+  "requestType": "ComplaintCapture",
+  "chatText": "proceed",
+  "action": "proceed"
+}
