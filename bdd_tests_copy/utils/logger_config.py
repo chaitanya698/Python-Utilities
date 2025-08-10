@@ -12,6 +12,7 @@ class LoggerSetup:
     
     _initialized = False
     _log_dir = Path("logs")
+    _loggers_configured = set()
     
     @classmethod
     def setup(cls, log_level: str = "INFO", log_file: Optional[str] = None) -> None:
@@ -24,11 +25,12 @@ class LoggerSetup:
         
         # Get root logger
         root_logger = logging.getLogger()
-        root_logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
         
-        # Remove existing handlers
-        for handler in root_logger.handlers[:]:
-            root_logger.removeHandler(handler)
+        # IMPORTANT: Clear all existing handlers to prevent double logging
+        root_logger.handlers.clear()
+        
+        # Set level
+        root_logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
         
         # Console handler
         console_handler = logging.StreamHandler(sys.stdout)
@@ -54,14 +56,18 @@ class LoggerSetup:
         file_handler.setLevel(logging.DEBUG)
         file_formatter = logging.Formatter(
             "%(asctime)s [%(levelname)-8s] [%(name)-30s:%(lineno)-4d] - %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S.%f"
+            datefmt="%Y-%m-%d %H:%M:%S"
         )
         file_handler.setFormatter(file_formatter)
         root_logger.addHandler(file_handler)
         
         # Suppress noisy loggers
-        for logger_name in ["urllib3", "requests", "oracledb"]:
+        for logger_name in ["urllib3", "requests", "oracledb", "PIL", "matplotlib"]:
             logging.getLogger(logger_name).setLevel(logging.WARNING)
+        
+        # IMPORTANT: Set propagate to False for pytest loggers to avoid duplication
+        logging.getLogger("pytest").propagate = False
+        logging.getLogger("_pytest").propagate = False
         
         cls._initialized = True
         root_logger.info(f"Logging initialized - Level: {log_level}, File: {log_file}")
@@ -69,8 +75,8 @@ class LoggerSetup:
 
 def get_logger(name: str) -> logging.Logger:
     """Get a logger instance for a module."""
-    return logging.getLogger(name)
-
-
-# Initialize on import with defaults
-LoggerSetup.setup(log_level=os.getenv("LOG_LEVEL", "INFO"))
+    logger = logging.getLogger(name)
+    # Ensure logger doesn't duplicate by setting propagate correctly
+    if name != "__main__" and "." in name:
+        logger.propagate = True
+    return logger
