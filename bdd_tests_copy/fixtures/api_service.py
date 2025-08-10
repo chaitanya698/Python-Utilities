@@ -1,6 +1,7 @@
 import requests
 import json
 import uuid
+import time
 from typing import Dict, Any, Optional
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -8,16 +9,18 @@ from requests.exceptions import RequestException, HTTPError, Timeout
 
 from ..config.settings import Settings
 from ..utils.logger_config import get_logger
+from ..utils.request_response_tracker import RequestResponseTracker
 
 
 class ChatbotAPIClient:
-    """Enterprise-grade API client with proper timeout handling and retry logic."""
+    """Enterprise-grade API client with request/response tracking."""
     
-    def __init__(self, config: Settings):
+    def __init__(self, config: Settings, tracker: Optional[RequestResponseTracker] = None):
         self.config = config
         self.logger = get_logger(__name__)
         self.base_url = config.API_BASE_URL.rstrip('/')
-        self.timeout = config.API_TIMEOUT  # Use timeout from config
+        self.timeout = config.API_TIMEOUT
+        self.tracker = tracker
         self.session = self._create_session()
     
     def _create_session(self) -> requests.Session:
@@ -61,7 +64,7 @@ class ChatbotAPIClient:
         correlation_id: Optional[str] = None,
         timeout: Optional[int] = None
     ) -> Dict[str, Any]:
-        """Make HTTP request with proper timeout and error handling."""
+        """Make HTTP request with tracking and error handling."""
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         correlation_id = correlation_id or str(uuid.uuid4())
         
@@ -74,7 +77,13 @@ class ChatbotAPIClient:
         
         request_headers['CLIENT-CORRELATION-ID'] = correlation_id
         
-        self.logger.info(f"[{correlation_id}] {method} {url} (timeout: {request_timeout}s)")
+        # Track request
+        if self.tracker:
+            self.tracker.add_request(method, url, request_headers, data, correlation_id)
+        
+        self.logger.info(f"[{correlation_id}] {method} {url}")
+        
+        start_time = time.time()
         
         try:
             response = self.session.request(
@@ -82,8 +91,25 @@ class ChatbotAPIClient:
                 url=url,
                 json=data,
                 headers=request_headers,
-                timeout=request_timeout  # Apply timeout
+                timeout=request_timeout
             )
+            
+            duration = time.time() - start_time
+            
+            # Track response
+            if self.tracker:
+                try:
+                    response_data = response.json()
+                except:
+                    response_data = response.text
+                
+                self.tracker.add_response(
+                    response.status_code,
+                    response.headers,
+                    response_data,
+                    duration,
+                    correlation_id
+                )
             
             self.logger.info(f"[{correlation_id}] Response Status: {response.status_code}")
             response.raise_for_status()
@@ -92,14 +118,18 @@ class ChatbotAPIClient:
             
         except Timeout as e:
             self.logger.error(f"[{correlation_id}] Request timeout after {request_timeout}s")
+            if self.tracker:
+                self.tracker.add_error("Timeout", str(e), correlation_id)
             raise
         except HTTPError as e:
             self.logger.error(f"[{correlation_id}] HTTP Error: {e}")
-            if hasattr(e, 'response') and e.response is not None:
-                self.logger.error(f"[{correlation_id}] Response: {e.response.text}")
+            if self.tracker:
+                self.tracker.add_error("HTTPError", str(e), correlation_id)
             raise
         except Exception as e:
             self.logger.error(f"[{correlation_id}] Unexpected Error: {e}")
+            if self.tracker:
+                self.tracker.add_error(type(e).__name__, str(e), correlation_id)
             raise
     
     def initiate_chat(
@@ -110,8 +140,9 @@ class ChatbotAPIClient:
         """Initiate a new chat conversation."""
         correlation_id = correlation_id or f"INIT-{uuid.uuid4()}"
         
-        # Ensure conversationId is set to 'initial'
-        request_data['conversationId'] = 'initial'
+        # Ensure conversationId is set appropriately
+        if 'conversationId' not in request_data:
+            request_data['conversationId'] = 'initial'
         
         self.logger.info(f"Initiating chat with correlation ID: {correlation_id}")
         
@@ -131,7 +162,7 @@ class ChatbotAPIClient:
         correlation_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """Send a message in an existing conversation."""
-        correlation_id = correlation_id or headers.get('CLIENT-CORRELATION-ID') if headers else None
+        correlation_id = correlation_id or (headers.get('CLIENT-CORRELATION-ID') if headers else None)
         correlation_id = correlation_id or f"MSG-{uuid.uuid4()}"
         
         payload = {
