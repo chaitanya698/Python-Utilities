@@ -6,10 +6,12 @@ from datetime import datetime
 from pytest_bdd import scenario, given, when, then, parsers
 
 from bdd_tests.utils.helpers import TestHelpers
+from bdd_tests.utils.error_injector import ErrorInjector  # Import from utils
 from bdd_tests.utils.request_response_tracker import RequestResponseTracker
 
 # Initialize logger
 logger = logging.getLogger(__name__)
+
 
 class GenericAPITestSteps:
     """Generic test steps that can handle various test scenarios."""
@@ -17,7 +19,44 @@ class GenericAPITestSteps:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         self.test_context = {}
-        self.error_injector = ErrorInjector()
+        self.error_injector = ErrorInjector()  # Initialize error injector
+    
+    @when(parsers.parse('I apply error scenario "{error_scenario}" if defined'))
+    def apply_error_scenario(self, error_scenario):
+        """Apply error scenario to the request using ErrorInjector."""
+        if error_scenario and error_scenario != '' and error_scenario.lower() != 'none':
+            request_data = self.test_context.get('request_data', {})
+            
+            # Log the scenario being applied
+            self.logger.info(f"Applying error scenario: {error_scenario}")
+            self.logger.debug(f"Scenario description: {self.error_injector.describe_scenario(error_scenario)}")
+            
+            # Apply error injection using the ErrorInjector utility
+            modified_request = self.error_injector.inject_error(request_data, error_scenario)
+            self.test_context['request_data'] = modified_request
+            self.test_context['error_scenario'] = error_scenario
+            
+            self.logger.info(f"Error scenario '{error_scenario}' applied successfully")
+    
+    @when('I apply multiple error scenarios')
+    def apply_multiple_error_scenarios(self):
+        """Apply multiple error scenarios to test combinations."""
+        test_data = self.test_context.get('test_data', {})
+        error_scenarios = test_data.get('error_scenarios', '').split(',')
+        
+        if error_scenarios:
+            request_data = self.test_context.get('request_data', {})
+            
+            # Apply multiple errors
+            modified_request = self.error_injector.inject_multiple_errors(
+                request_data, 
+                [s.strip() for s in error_scenarios]
+            )
+            
+            self.test_context['request_data'] = modified_request
+            self.test_context['error_scenarios'] = error_scenarios
+            
+            self.logger.info(f"Applied multiple error scenarios: {error_scenarios}")
     
     @given('the test environment is configured')
     def setup_environment(self, config, request_response_tracker):
