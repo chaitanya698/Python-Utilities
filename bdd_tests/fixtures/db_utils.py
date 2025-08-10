@@ -1,73 +1,65 @@
 import logging
-from sqlalchemy import text
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+from datetime import datetime
 
-# Import the Database class for type hinting
-from utils.database_util import Database
-
-logger = logging.getLogger(__name__)
+from ..database.db_manager import DatabaseManager
+from ..utils.logger_config import get_logger
 
 
 class DBUtils:
-    """
-    A utility class that uses a managed Database instance to run queries.
-    """
+    """Database utility functions for test automation."""
     
-    def __init__(self, database: Database):
-        """
-        Initializes the DBUtils with a Database connection manager.
-
-        Args:
-            database (Database): An initialized instance of the Database class.
-        """
-        self.db = database
+    def __init__(self, db_manager: DatabaseManager):
+        """Initialize with database manager."""
+        self.db = db_manager
+        self.logger = get_logger(__name__)
     
     def get_chat_history(self, conversation_id: str) -> List[Dict[str, Any]]:
-        """
-        Queries the database for chat history using a session from the connection manager.
-        """
-        sql_query = text("""
-            SELECT * FROM galaxy_complaint_ai.chat_history 
-            WHERE conversation_id = :conv_id 
+        """Retrieve chat history for a conversation."""
+        query = """
+            SELECT 
+                conversation_id,
+                message_id,
+                timestamp,
+                user_message,
+                bot_response,
+                action,
+                status
+            FROM galaxy_complaint_ai.chat_history 
+            WHERE conversation_id = :conversation_id 
             ORDER BY timestamp ASC
-        """)
+        """
         
-        logger.info(f"Querying chat history for conversation_id: {conversation_id}")
+        self.logger.info(f"Retrieving chat history for conversation: {conversation_id}")
         
-        # Get a new session from our database manager for this specific operation
-        with self.db.get_session() as session:
-            try:
-                result = session.execute(sql_query, {"conv_id": conversation_id})
-                results_list = [dict(row) for row in result.mappings()]
-                logger.info(f"Found {len(results_list)} records for conversation_id: {conversation_id}")
-                return results_list
-            except Exception as e:
-                logger.error(f"Database query failed for conversation_id {conversation_id}: {e}")
-                session.rollback()
-                raise
+        try:
+            results = self.db.execute_query(query, {"conversation_id": conversation_id})
+            self.logger.info(f"Found {len(results)} messages for conversation: {conversation_id}")
+            return results
+        except Exception as e:
+            self.logger.error(f"Failed to retrieve chat history: {e}")
+            return []
     
     def verify_conversation_exists(self, conversation_id: str) -> bool:
         """Check if a conversation exists in the database."""
-        query = text("""
+        query = """
             SELECT COUNT(*) as count 
             FROM galaxy_complaint_ai.chat_history 
             WHERE conversation_id = :conversation_id
-        """)
+        """
         
         try:
-            with self.db.get_session() as session:
-                result = session.execute(query, {"conversation_id": conversation_id})
-                count = result.scalar()
-                exists = count > 0 if count else False
-                logger.info(f"Conversation {conversation_id} exists: {exists}")
-                return exists
+            results = self.db.execute_query(query, {"conversation_id": conversation_id})
+            exists = results[0]['count'] > 0 if results else False
+            self.logger.info(f"Conversation {conversation_id} exists: {exists}")
+            return exists
         except Exception as e:
-            logger.error(f"Failed to verify conversation: {e}")
+            self.logger.error(f"Failed to verify conversation: {e}")
             return False
     
-    def get_complaint_details(self, interaction_id: str) -> Dict[str, Any]:
+    def get_complaint_details(self, interaction_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve complaint details by interaction ID."""
-        query = text("""
+        query = """
             SELECT 
                 interaction_id,
                 conversation_id,
@@ -82,13 +74,64 @@ class DBUtils:
                 updated_at
             FROM galaxy_complaint_ai.complaints 
             WHERE interaction_id = :interaction_id
-        """)
+        """
         
         try:
-            with self.db.get_session() as session:
-                result = session.execute(query, {"interaction_id": interaction_id})
-                row = result.first()
-                return dict(row) if row else None
+            results = self.db.execute_query(query, {"interaction_id": interaction_id})
+            return results[0] if results else None
         except Exception as e:
-            logger.error(f"Failed to retrieve complaint details: {e}")
+            self.logger.error(f"Failed to retrieve complaint details: {e}")
             return None
+    
+    def get_test_metrics(self, start_date: datetime, end_date: datetime) -> Dict[str, Any]:
+        """Get test execution metrics for reporting."""
+        query = """
+            SELECT 
+                COUNT(DISTINCT conversation_id) as total_conversations,
+                COUNT(CASE WHEN status = 'completed' THEN 1 END) as completed,
+                COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed,
+                AVG(CASE 
+                    WHEN completion_time IS NOT NULL 
+                    THEN (completion_time - start_time) * 24 * 60 * 60
+                END) as avg_duration_seconds
+            FROM galaxy_complaint_ai.test_executions
+            WHERE start_time BETWEEN :start_date AND :end_date
+        """
+        
+        try:
+            results = self.db.execute_query(query, {
+                "start_date": start_date,
+                "end_date": end_date
+            })
+            return results[0] if results else {
+                "total_conversations": 0,
+                "completed": 0,
+                "failed": 0,
+                "avg_duration_seconds": 0
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to retrieve test metrics: {e}")
+            return {}
+    
+    def cleanup_test_data(self, conversation_ids: List[str]) -> bool:
+        """Clean up test data after test execution."""
+        if not conversation_ids:
+            return True
+        
+        try:
+            # Clean up chat history
+            delete_chat_query = """
+                DELETE FROM galaxy_complaint_ai.chat_history 
+                WHERE conversation_id IN :conversation_ids
+            """
+            
+            with self.db.get_session() as session:
+                session.execute(delete_chat_query, {"conversation_ids": tuple(conversation_ids)})
+                session.commit()
+            
+            self.logger.info(f"Cleaned up test data for {len(conversation_ids)} conversations")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to clean up test data: {e}")
+            return False

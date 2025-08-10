@@ -6,17 +6,18 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from requests.exceptions import RequestException, HTTPError, Timeout
 
-from config.settings import Settings
-from utils.logger_config import get_logger
+from ..config.settings import Settings
+from ..utils.logger_config import get_logger
 
 
 class ChatbotAPIClient:
-    """Enterprise-grade API client with retry logic and comprehensive error handling."""
+    """Enterprise-grade API client with proper timeout handling and retry logic."""
     
     def __init__(self, config: Settings):
         self.config = config
         self.logger = get_logger(__name__)
         self.base_url = config.API_BASE_URL.rstrip('/')
+        self.timeout = config.API_TIMEOUT  # Use timeout from config
         self.session = self._create_session()
     
     def _create_session(self) -> requests.Session:
@@ -34,7 +35,7 @@ class ChatbotAPIClient:
         session.mount("https://", adapter)
         session.mount("http://", adapter)
         
-        # Configure SSL certificate
+        # Configure SSL certificate if available
         if self.config.CERT_PEM_PATH and self.config.KEY_PEM_PATH:
             session.cert = (self.config.CERT_PEM_PATH, self.config.KEY_PEM_PATH)
             self.logger.info("Session configured with client certificate")
@@ -51,49 +52,21 @@ class ChatbotAPIClient:
         
         return session
     
-    def _log_request(self, method: str, url: str, headers: Dict, data: Any) -> None:
-        """Log API request details."""
-        if self.config.ENABLE_DETAILED_LOGGING:
-            self.logger.debug(f"API Request: {method} {url}")
-            self.logger.debug(f"Headers: {self._sanitize_headers(headers)}")
-            if data:
-                self.logger.debug(f"Payload: {json.dumps(data, indent=2)}")
-        else:
-            self.logger.info(f"API Request: {method} {url}")
-    
-    def _log_response(self, response: requests.Response, correlation_id: str) -> None:
-        """Log API response details."""
-        if self.config.ENABLE_DETAILED_LOGGING:
-            self.logger.debug(f"[{correlation_id}] Response Status: {response.status_code}")
-            try:
-                self.logger.debug(f"[{correlation_id}] Response Body: {response.text}")
-            except Exception:
-                self.logger.debug(f"[{correlation_id}] Response Body: <Unable to decode>")
-        else:
-            self.logger.info(f"[{correlation_id}] Response Status: {response.status_code}")
-    
-    def _sanitize_headers(self, headers: Dict) -> Dict:
-        """Remove sensitive information from headers for logging."""
-        sanitized = headers.copy()
-        sensitive_keys = ['authorization', 'x-api-key', 'cookie', 'cert-password']
-        
-        for key in list(sanitized.keys()):
-            if any(sensitive in key.lower() for sensitive in sensitive_keys):
-                sanitized[key] = '***REDACTED***'
-        
-        return sanitized
-    
     def _make_request(
         self, 
         method: str, 
         endpoint: str, 
         data: Optional[Dict] = None,
         headers: Optional[Dict] = None,
-        correlation_id: Optional[str] = None
+        correlation_id: Optional[str] = None,
+        timeout: Optional[int] = None
     ) -> Dict[str, Any]:
-        """Make HTTP request with error handling."""
+        """Make HTTP request with proper timeout and error handling."""
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         correlation_id = correlation_id or str(uuid.uuid4())
+        
+        # Use provided timeout or default from config
+        request_timeout = timeout or self.timeout
         
         request_headers = self.session.headers.copy()
         if headers:
@@ -101,7 +74,7 @@ class ChatbotAPIClient:
         
         request_headers['CLIENT-CORRELATION-ID'] = correlation_id
         
-        self._log_request(method, url, request_headers, data)
+        self.logger.info(f"[{correlation_id}] {method} {url} (timeout: {request_timeout}s)")
         
         try:
             response = self.session.request(
@@ -109,27 +82,21 @@ class ChatbotAPIClient:
                 url=url,
                 json=data,
                 headers=request_headers,
-                timeout=self.config.API_TIMEOUT
+                timeout=request_timeout  # Apply timeout
             )
             
-            self._log_response(response, correlation_id)
+            self.logger.info(f"[{correlation_id}] Response Status: {response.status_code}")
             response.raise_for_status()
             
             return response.json()
             
         except Timeout as e:
-            self.logger.error(f"[{correlation_id}] Request timeout after {self.config.API_TIMEOUT}s")
+            self.logger.error(f"[{correlation_id}] Request timeout after {request_timeout}s")
             raise
         except HTTPError as e:
             self.logger.error(f"[{correlation_id}] HTTP Error: {e}")
             if hasattr(e, 'response') and e.response is not None:
                 self.logger.error(f"[{correlation_id}] Response: {e.response.text}")
-            raise
-        except RequestException as e:
-            self.logger.error(f"[{correlation_id}] Request Error: {e}")
-            raise
-        except json.JSONDecodeError as e:
-            self.logger.error(f"[{correlation_id}] JSON Decode Error: {e}")
             raise
         except Exception as e:
             self.logger.error(f"[{correlation_id}] Unexpected Error: {e}")
@@ -158,18 +125,20 @@ class ChatbotAPIClient:
     def send_message(
         self, 
         conversation_id: str, 
-        message: str, 
+        chat_text: str, 
         action: str = "proceed",
+        headers: Optional[Dict] = None,
         correlation_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """Send a message in an existing conversation."""
+        correlation_id = correlation_id or headers.get('CLIENT-CORRELATION-ID') if headers else None
         correlation_id = correlation_id or f"MSG-{uuid.uuid4()}"
         
         payload = {
             "channelID": "BBVA",
             "conversationID": conversation_id,
             "requestType": "ComplaintCapture",
-            "chatText": message,
+            "chatText": chat_text,
             "action": action
         }
         
@@ -179,6 +148,7 @@ class ChatbotAPIClient:
             'POST',
             '/api/agentic-chat/v1',
             data=payload,
+            headers=headers,
             correlation_id=correlation_id
         )
     
