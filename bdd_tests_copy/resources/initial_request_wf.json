@@ -1,0 +1,16 @@
+{
+  "channelID": "BBVA",
+  "conversationId": "initial",
+  "dataElements": [
+    {"name": "businessName", "value": "WF"},
+    {"name": "customerFullName", "value": "John Doe"},
+    {"name": "submitterEmployeeID", "value": "123456"},
+    {"name": "ECN", "value": "54321"},
+    {"name": "country", "value": "USA"},
+    {"name": "customerPhoneNumber", "value": "1234567890"},
+    {"name": "languagePreference", "value": "en-US"}
+  ],
+  "requestType": "ComplaintCapture",
+  "chatText": "proceed",
+  "action": "proceed"
+}
