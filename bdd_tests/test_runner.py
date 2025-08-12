@@ -3,155 +3,105 @@ import os
 import argparse
 from pathlib import Path
 import pytest
+import logging
 
+logger = logging.getLogger(__name__)
 
-def main():
+BASE_FEATURE_DIR = Path("bdd_tests").resolve()
+
+def _is_within_base(p: Path, base: Path) -> bool:
+    try:
+        p = p.resolve(strict=False)
+        base = base.resolve(strict=False)
+        return base in p.parents or p == base
+    except OSError:
+        return False
+
+def normalize_feature_path(feature: str) -> Path | None:
+    
+    candidate = Path(feature)
+    if not candidate.is_absolute():
+        candidate = (Path.cwd() / candidate)
+    candidate = candidate.resolve(strict=False)
+    if _is_within_base(candidate, BASE_FEATURE_DIR) and (candidate.is_dir() or candidate.suffix == ".feature"):
+        return candidate
+
+    candidate = (BASE_FEATURE_DIR / feature).resolve(strict=False)
+    if _is_within_base(candidate, BASE_FEATURE_DIR) and (candidate.is_dir() or candidate.suffix == ".feature"):
+        return candidate
+
+    logger.error(f"Rejected path outside allowed directory: {feature}")
+    return None
+
+def main() -> int:
     """Main entry point for test runner."""
     parser = argparse.ArgumentParser(
         description="BDD Test Automation Framework Runner",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Run all tests in QA environment
-  python test_runner.py --env qa
-  
-  # Run smoke tests in DEV environment with detailed report
-  python test_runner.py --env dev --tags smoke --report
-  
-  # Run specific feature file
-  python test_runner.py --env qa --feature features/complaint_capture.feature
-        """
+        epilog="******",
     )
-    
-    parser.add_argument(
-        "--env",
-        default="qa",
-        choices=["dev", "qa", "staging", "production"],
-        help="Environment to run tests against (default: qa)"
-    )
-    
-    parser.add_argument(
-        "--tags",
-        help="Pytest markers to run (e.g., 'smoke', 'regression', 'smoke and not slow')"
-    )
-    
-    parser.add_argument(
-        "--feature",
-        help="Specific feature file or directory to run"
-    )
-    
-    parser.add_argument(
-        "--report",
-        action="store_true",
-        default=True,
-        help="Generate HTML report after test run (default: True)"
-    )
-    
-    parser.add_argument(
-        "--report-title",
-        default="BDD Test Automation Report",
-        help="Custom title for the HTML report"
-    )
-    
-    parser.add_argument(
-        "--parallel",
-        type=int,
-        metavar="N",
-        help="Run tests in parallel using N workers"
-    )
-    
-    parser.add_argument(
-        "--verbose",
-        "-v",
-        action="count",
-        default=1,
-        help="Increase verbosity (use -vv for more verbose)"
-    )
-    
-    parser.add_argument(
-        "--capture",
-        choices=["yes", "no", "sys"],
-        default="no",
-        help="Capture stdout/stderr (default: no)"
-    )
-    
-    parser.add_argument(
-        "pytest_args",
-        nargs=argparse.REMAINDER,
-        help="Additional arguments to pass to pytest"
-    )
-    
+    parser.add_argument("--env", default="qa",
+                        choices=["dev", "qa", "staging", "production"],
+                        help="Environment to run tests against (default: qa)")
+    parser.add_argument("--feature", nargs="*",
+                        help="Specific feature file(s) or directory to run (e.g., features/login.feature or features/)")
+    parser.add_argument("--tags", help="Run tests with specific tags (e.g., @smoke, @regression)")
+    parser.add_argument("--report", action="store_true", help="Generate detailed HTML report")
     args = parser.parse_args()
-    
-    # Set environment variable for configuration loading
+
+    # Force base env vars early (no secrets)
     os.environ["ENVIRONMENT"] = args.env
-    print(f"\n{'='*60}")
-    print(f"Starting BDD Test Execution")
-    print(f"Environment: {args.env.upper()}")
-    print(f"{'='*60}\n")
-    
-    # Build pytest command
-    pytest_args = []
-    
-    # Add test directory or specific feature
+    os.environ["LOG_LEVEL"] = "INFO"
+
+    pytest_args: list[str] = []
+
+    # Resolve features safely
     if args.feature:
-        pytest_args.append(args.feature)
+        resolved: list[str] = []
+        for f in args.feature:
+            safe = normalize_feature_path(f)
+            if not safe:
+                return 1
+            resolved.append(str(safe))
+        pytest_args.extend(resolved)
     else:
-        pytest_args.append("bdd_tests/features/steps")
-    
-    # Add verbosity
-    pytest_args.append("-" + "v" * args.verbose)
-    
-    # Add capture setting
-    pytest_args.append(f"--capture={args.capture}")
-    
-    # Add environment
+        # default: whole features folder
+        if not BASE_FEATURE_DIR.joinpath("features").exists():
+            logger.error("Error: Features directory not found")
+            return 1
+        pytest_args.append(str(BASE_FEATURE_DIR / "features"))
+
+    # env
     pytest_args.extend(["--env", args.env])
-    
-    # Add tags/markers if specified
+
+    # tags
     if args.tags:
         pytest_args.extend(["-m", args.tags])
-    
-    # Add parallel execution if specified
-    if args.parallel:
-        pytest_args.extend(["-n", str(args.parallel)])
-    
-    # Add HTML report generation
+
+    # report
     if args.report:
-        report_name = f"reports/test_report_{args.env}_{Path(__file__).parent.name}.html"
-        pytest_args.extend([
-            "--html", report_name,
-            "--self-contained-html",
-            "--html-report-title", args.report_title
-        ])
-    
-    # Add logging
+        reports_dir = Path("reports")
+        reports_dir.mkdir(exist_ok=True)
+        pytest_args.extend([f"--html={reports_dir}/report.html", "--self-contained-html"])
+
+    # logging
     pytest_args.extend([
         "--log-cli-level=INFO",
-        "--log-cli-format=%(asctime)s [%(levelname)8s] %(name)s - %(message)s",
-        "--log-cli-date-format=%Y-%m-%d %H:%M:%S"
+        '--log-cli-format="%(asctime)s %(levelname)s %(name)s - %(message)s"',
+        "--tb=short",
     ])
-    
-    # Add any additional pytest arguments
-    if args.pytest_args:
-        pytest_args.extend(args.pytest_args)
-    
-    # Print command for debugging
-    print(f"Executing: pytest {' '.join(pytest_args)}\n")
-    
-    # Run pytest
-    exit_code = pytest.main(pytest_args)
-    
-    # Print summary
-    print(f"\n{'='*60}")
-    if exit_code == 0:
-        print("✅ All tests passed successfully!")
-    else:
-        print(f"❌ Tests failed with exit code: {exit_code}")
-    print(f"{'='*60}\n")
-    
-    sys.exit(exit_code)
 
+    logger.info("=" * 60)
+    logger.info("Starting BDD Test Execution")
+    logger.info(f"Environment: {args.env.upper()}")
+    if args.feature:
+        logger.info(f"Features: {', '.join(args.feature)}")
+    if args.tags:
+        logger.info(f"Tags: {args.tags}")
+    logger.info("=" * 60)
+    logger.info(f"Executing: pytest {' '.join(pytest_args)}")
+
+    return pytest.main(pytest_args)
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
