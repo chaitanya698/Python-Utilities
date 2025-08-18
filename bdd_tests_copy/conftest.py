@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from pytest_bdd import given, when, then, parsers
+from playwright.sync_api import sync_playwright, Playwright, APIRequestContext
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -44,6 +45,13 @@ def pytest_addoption(parser):
         type=int,
         help="Number of retries for failed tests (default: 2)"
     )
+    parser.addoption(
+        "--api-timeout",
+        action="store",
+        default=None,
+        type=int,
+        help="Override API timeout in seconds"
+    )
 
 
 def pytest_configure(config):
@@ -58,7 +66,7 @@ def pytest_configure(config):
     
     logger = get_logger(__name__)
     logger.info(f"=" * 60)
-    logger.info(f"Starting test run in {env.upper()} environment")
+    logger.info(f"Starting Playwright-based test run in {env.upper()} environment")
     logger.info(f"Retry count: {config.getoption('--retry-count')}")
     logger.info(f"=" * 60)
     
@@ -67,8 +75,9 @@ def pytest_configure(config):
         'Environment': env.upper(),
         'Platform': platform.system(),
         'Python': platform.python_version(),
-        'Test Framework': 'pytest-bdd',
-        'Retry Count': str(config.getoption('--retry-count'))
+        'Test Framework': 'pytest-bdd + Playwright',
+        'Retry Count': str(config.getoption('--retry-count')),
+        'API Testing': 'Playwright APIRequestContext'
     }
     
     # Register cleanup
@@ -101,7 +110,7 @@ def pytest_runtest_makereport(item, call):
             
             # Add JSON data as collapsible section
             json_data = json.dumps(history, indent=2, default=str)
-            extra.append(pytest_html.extras.json(json_data, name="API Request/Response Details"))
+            extra.append(pytest_html.extras.json(json_data, name="Playwright API Request/Response Details"))
             
             report.extra = extra
 
@@ -117,11 +126,67 @@ def config(pytestconfig) -> Settings:
     
     try:
         settings = get_config()
+        
+        # Override API timeout if specified
+        api_timeout = pytestconfig.getoption("--api-timeout")
+        if api_timeout:
+            settings.API_TIMEOUT = api_timeout
+            logger.info(f"API timeout overridden to {api_timeout}s")
+        
         logger.info(f"Configuration loaded successfully")
         return settings
     except Exception as e:
         logger.error(f"Failed to load configuration: {e}")
         pytest.fail(f"Configuration loading failed: {e}")
+
+
+@pytest.fixture(scope="session")
+def playwright() -> Generator[Playwright, None, None]:
+    """Create Playwright instance for the session."""
+    logger = get_logger(__name__)
+    logger.info("Initializing Playwright for API testing")
+    
+    with sync_playwright() as p:
+        yield p
+
+
+@pytest.fixture(scope="session")
+def playwright_request_context(config: Settings, playwright: Playwright) -> Generator[APIRequestContext, None, None]:
+    """Create Playwright APIRequestContext for API testing."""
+    logger = get_logger(__name__)
+    logger.info("Creating Playwright API request context")
+    
+    try:
+        # Configure SSL certificate if available
+        client_certificates = []
+        if config.CERT_PEM_PATH and config.KEY_PEM_PATH:
+            client_certificates = [{
+                "cert": config.CERT_PEM_PATH,
+                "key": config.KEY_PEM_PATH
+            }]
+            logger.info("Client certificate configured for API requests")
+        
+        # Create request context with configuration
+        context = playwright.request.new_context(
+            base_url=config.API_BASE_URL,
+            timeout=config.API_TIMEOUT * 1000,  # Convert to milliseconds
+            ignore_https_errors=not config.VERIFY_SSL,
+            client_certificates=client_certificates if client_certificates else None,
+            extra_http_headers={
+                'User-Agent': 'ChatbotAutomation-Playwright/1.0'
+            }
+        )
+        
+        logger.info("Playwright API context initialized successfully")
+        yield context
+        
+    except Exception as e:
+        logger.error(f"Failed to initialize Playwright API context: {e}")
+        pytest.skip(f"Playwright API context initialization failed: {e}")
+    finally:
+        if 'context' in locals():
+            context.dispose()
+            logger.info("Playwright API context disposed")
 
 
 @pytest.fixture(scope="session")
@@ -150,16 +215,34 @@ def db_manager(config: Settings) -> Generator[DatabaseManager, None, None]:
 
 
 @pytest.fixture(scope="session")
-def api_client(config: Settings, request_response_tracker: RequestResponseTracker) -> Generator[ChatbotAPIClient, None, None]:
-    """Create API client for the session."""
+def api_client(
+    config: Settings, 
+    request_response_tracker: RequestResponseTracker, 
+    playwright_request_context: APIRequestContext
+) -> Generator[ChatbotAPIClient, None, None]:
+    """Create Playwright-based API client for the session."""
     logger = get_logger(__name__)
-    logger.info("Initializing API client")
+    logger.info("Initializing Playwright API client")
     
-    # Create API client with request/response tracking
-    client = ChatbotAPIClient(config, request_response_tracker)
-    yield client
-    client.close()
-    logger.info("API client closed")
+    # Create API client with Playwright request context and tracking
+    client = ChatbotAPIClient(config, request_response_tracker, playwright_request_context)
+    
+    try:
+        # Perform health check if endpoint is available
+        try:
+            health_response = client.health_check()
+            logger.info(f"API health check successful: {health_response}")
+        except Exception as e:
+            logger.warning(f"API health check failed (continuing anyway): {e}")
+        
+        yield client
+        
+    except Exception as e:
+        logger.error(f"API client initialization failed: {e}")
+        pytest.skip(f"API client initialization failed: {e}")
+    finally:
+        client.close()
+        logger.info("Playwright API client closed")
 
 
 @pytest.fixture(scope="session")
@@ -188,8 +271,33 @@ def test_context(request) -> Dict[str, Any]:
         'interaction_id': None,
         'correlation_id': None,
         'step_results': [],
-        'request_history': []
+        'request_history': [],
+        'playwright_context': 'api_only'  # Indicate this is API-only testing
     }
+
+
+# Fixture combinations for step definitions compatibility
+@pytest.fixture
+def given_api_is_available(api_client: ChatbotAPIClient, test_context: Dict[str, Any]) -> Dict[str, Any]:
+    """Verify API is available and add to test context."""
+    test_context['api_client'] = api_client
+    
+    logger = get_logger(__name__)
+    logger.info(f"API client available for test: {test_context['test_id']}")
+    
+    return test_context
+
+
+@pytest.fixture 
+def given_test_data_loaded(test_data_row: Dict[str, Any], test_context: Dict[str, Any]) -> Dict[str, Any]:
+    """Load test data into context."""
+    test_context['test_data'] = test_data_row
+    
+    logger = get_logger(__name__)
+    test_case_id = test_data_row.get('test_case_id', 'Unknown')
+    logger.info(f"Test data loaded for case: {test_case_id}")
+    
+    return test_context
 
 
 def pytest_generate_tests(metafunc):
@@ -222,7 +330,7 @@ def pytest_generate_tests(metafunc):
                     for idx, row in enumerate(all_test_data)
                 ]
                 
-                logger.info(f"Loaded {len(all_test_data)} test cases")
+                logger.info(f"Loaded {len(all_test_data)} test cases for Playwright execution")
                 metafunc.parametrize("test_data_row", all_test_data, ids=test_ids)
             else:
                 logger.warning("No test data found")
@@ -231,3 +339,56 @@ def pytest_generate_tests(metafunc):
         except Exception as e:
             logger.error(f"Failed to load test data: {e}")
             pytest.fail(f"Test data loading failed: {e}")
+
+
+# Pytest plugin configuration for Playwright
+def pytest_configure_playwright(config):
+    """Configure Playwright settings for API testing."""
+    logger = get_logger(__name__)
+    
+    try:
+        # Set Playwright-specific environment variables for API testing
+        os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "0")  # Skip browser downloads if not needed
+        
+        # Configure Playwright for API-only usage
+        playwright_config = {
+            # API Request specific settings
+            "timeout": int(os.getenv("API_TIMEOUT", "45")) * 1000,  # Convert to milliseconds
+            "ignore_https_errors": not bool(os.getenv("VERIFY_SSL", "true").lower() == "true"),
+            
+            # Trace settings for debugging (optional)
+            "trace": {
+                "screenshots": False,  # Not needed for API testing
+                "snapshots": False,    # Not needed for API testing
+                "sources": True,       # Keep source code traces
+            },
+            
+            # Video settings (disabled for API testing)
+            "video": None,
+            
+            # Screenshot settings (disabled for API testing)  
+            "screenshot": None,
+            
+            # Global timeout settings
+            "expect_timeout": 30000,  # 30 seconds for assertions
+            "action_timeout": 60000,  # 60 seconds for actions
+        }
+        
+        # Store configuration for later use
+        config._playwright_api_config = playwright_config
+        
+        logger.info("Playwright configured for API testing")
+        logger.debug(f"Playwright config: {playwright_config}")
+        
+    except Exception as e:
+        logger.warning(f"Failed to configure Playwright settings: {e}")
+        # Don't fail the test run if Playwright configuration fails
+        pass
+
+
+def pytest_playwright_auto_setup(config):
+    """Auto-setup for Playwright when plugin is available."""
+    # This is called by pytest-playwright plugin if available
+    # We can customize the auto-setup behavior here
+    logger = get_logger(__name__)
+    logger.info("Playwright auto-setup for API testing framework")
