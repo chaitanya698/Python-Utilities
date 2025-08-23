@@ -1,360 +1,96 @@
+import csv
 import re
-from typing import Dict, Any
 import logging
+from typing import Dict, Any
 from pytest_bdd import scenario, given, when, then, parsers
-from bdd_tests_copy.utils.helpers import TestHelpers
+from bdd_tests.utils.helpers import TestHelpers
 
-# Initialize logger
-logger = logging.getLogger(__name__)  # Changed from root logger to named logger
+logger = logging.getLogger(__name__)
+
+
+# -------- Load test data from CSV --------
+def load_test_data_from_csv(filepath: str) -> Dict[str, Dict[str, str]]:
+    data = {}
+    with open(filepath, newline='', encoding='utf-8') as csvfile:
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            field_key = row['field_key']
+            data[field_key] = {
+                "chatText": row['chatText'],
+                "expected_response": row['expected_response']
+            }
+    return data
+
+
+# -------- Scenario --------
 
 @scenario(
-    feature_name='./complaint_capture.feature',
-    scenario_name='Verify end-to-end complaint capture process using data from an external source'
+    feature_name='./complaint_capture_end_to_end.feature',
+    scenario_name='Verify complaint workflow from user input to database storage'
 )
 def test_complaint_workflow():
-    """Parameterized test for complaint workflow."""
     pass
 
-# --- Given Steps ---
+
+# -------- Given --------
+
 @given('the chatbot API is available and test data is loaded')
-def setup_test_context(
-    given_api_is_available: Dict[str, Any],
-    given_test_data_loaded: Dict[str, Any]
-) -> Dict[str, Any]:
-    """Initialize test context with API and data."""
+def setup_test_context(given_api_is_available: Dict[str, Any]) -> Dict[str, Any]:
     context = given_api_is_available
-    context.update(given_test_data_loaded)
-    
-    # Set correlation ID
-    test_case_id = context['test_data'].get('test_case_id', 'TEST')
-    context['correlation_id'] = TestHelpers.generate_correlation_id(test_case_id)
-    
-    logger.info(
-        f"Test initialized - Case: {test_case_id}, "
-        f"Correlation: {context['correlation_id']}"
-    )
-    
+
+    # Load CSV test data into context
+    context['test_data'] = load_test_data_from_csv("bdd_tests/test_data/chat_test_data.csv")
+
+    # Generate correlation ID
+    context['correlation_id'] = TestHelpers.generate_correlation_id("ComplaintWorkflow")
+    logger.info("Test initialized with correlation=%s", context['correlation_id'])
     return context
 
-# --- When Steps ---
-@when('I send the initial complaint request')
-def send_initial_request(
-    test_context: Dict[str, Any],
-    data_loader
-) -> None:
-    """Send initial complaint request."""
-    api_client = test_context['api_client']
-    test_data = test_context['test_data']
-    
-    # Load request template
-    request_file = test_data.get('initial_request_file', 'initial_request.json')
-    initial_request = data_loader.load_json(request_file)
-    
-    logger.info(f"Sending initial request for case: {test_data.get('test_case_id')}")
-    
-    try:
-        # Send request
-        response = api_client.initiate_chat(
-            request_data=initial_request,
-            correlation_id=test_context['correlation_id']
-        )
-        
-        test_context['response'] = response
-        test_context['conversation_id'] = response.get('conversationID')
-        
-    except Exception as e:
-        logger.error(f"Failed to send initial request: {e}")
-        raise
 
-@when('the user responds with the complaint date')
-def user_responds_with_complaint_date(test_context: Dict[str, Any]) -> None:
-    complaint_date = test_context['test_data'].get('complaint_date', '10/01/2025')
+# -------- When --------
+
+@when(parsers.parse('the user responds with "{field_key}"'))
+def user_responds_with_chattext(test_context: Dict[str, Any], field_key: str) -> None:
     api_client = test_context['api_client']
-    conversation_id = test_context['conversation_id']
-    
-    # Call send_message with the correct parameters
+    conversation_id = test_context.get('conversation_id')
+    chat_text = test_context['test_data'][field_key]['chatText']
+
     response = api_client.send_message(
         conversation_id=conversation_id,
-        chat_text=complaint_date,
+        chat_text=chat_text,
         action="proceed",
-        headers={"CLIENT-CORRELATION-ID": test_context.get('correlation_id')}
+        headers={"CLIENT-CORRELATION-ID": test_context['correlation_id']}
     )
-    
-    # Save response for validation in then steps
-    test_context['response'] = response
-    logger.info(f"User responded with complaint date: {complaint_date}")
 
-@when('the user responds with the method of complaint')
-def user_responds_with_complaint_method(test_context: Dict[str, Any]) -> None:
-    complaint_method = test_context['test_data'].get('complaint_method', 'Phone')
-    api_client = test_context['api_client']
-    conversation_id = test_context['conversation_id']
-    
-    response = api_client.send_message(
-        conversation_id=conversation_id,
-        chat_text=complaint_method,
-        action="proceed",
-        headers={"CLIENT-CORRELATION-ID": test_context.get('correlation_id')}
-    )
-    
-    # Save response for validation in then steps
     test_context['response'] = response
-    logger.info(f"User responded with complaint method: {complaint_method}")
+    logger.info("User responded with %s = %s", field_key, chat_text)
 
-@when('the user responds with the account number')
-def user_responds_with_account_number(test_context: Dict[str, Any]) -> None:
-    account_number = test_context['test_data'].get('account_number', 'DDA...3970')
-    api_client = test_context['api_client']
-    conversation_id = test_context['conversation_id']
-    
-    response = api_client.send_message(
-        conversation_id=conversation_id,
-        chat_text=account_number,
-        action="proceed",
-        headers={"CLIENT-CORRELATION-ID": test_context.get('correlation_id')}
-    )
-    
-    # Save response for validation in then steps
-    test_context['response'] = response
-    logger.info(f"User responded with account number: {account_number}")
 
-@when('the user responds with the complaint details')
-def user_responds_with_complaint_details(test_context: Dict[str, Any]) -> None:
-    complaint_details = test_context['test_data'].get(
-        'complaint_details',
-        'Customer stated that their loan application was rejected despite having a good credit score'
-    )
-    
-    api_client = test_context['api_client']
-    conversation_id = test_context['conversation_id']
-    
-    response = api_client.send_message(
-        conversation_id=conversation_id,
-        chat_text=complaint_details,
-        action="proceed",
-        headers={"CLIENT-CORRELATION-ID": test_context.get('correlation_id')}
-    )
-    
-    # Save response for validation in then steps
-    test_context['response'] = response
-    logger.info(f"User responded with complaint details: {complaint_details}")
+# -------- Then --------
 
-@when('the user provides a final summary comment')
-def user_provides_summary(test_context: Dict[str, Any]) -> None:
-    summary_text = test_context['test_data'].get(
-        'final_summary_comment',
-        'Its a sales misconduct'
-    )
-    
-    api_client = test_context['api_client']
-    conversation_id = test_context['conversation_id']
-    
-    response = api_client.send_message(
-        conversation_id=conversation_id,
-        chat_text=summary_text,
-        action="proceed",
-        headers={"CLIENT-CORRELATION-ID": test_context.get('correlation_id')}
-    )
-    
-    # Save response for validation in then steps
-    test_context['response'] = response
-    logger.info(f"User provided summary comment: {summary_text}")
-
-@when('the user responds with the contact willingness')
-def user_responds_with_contact_willingness(test_context: Dict[str, Any]) -> None:
-    contact_response = test_context['test_data'].get('contact_willingness_response', 'Continue')
-    api_client = test_context['api_client']
-    conversation_id = test_context['conversation_id']
-    
-    response = api_client.send_message(
-        conversation_id=conversation_id,
-        chat_text=contact_response,
-        action="proceed",
-        headers={"CLIENT-CORRELATION-ID": test_context.get('correlation_id')}
-    )
-    
-    # Save response for validation in then steps
-    test_context['response'] = response
-    logger.info(f"User responded with contact willingness: {contact_response}")
-
-@when('the user confirms the summary')
-def user_confirms_summary(test_context: Dict[str, Any]) -> None:
-    api_client = test_context['api_client']
-    conversation_id = test_context['conversation_id']
-    
-    response = api_client.send_message(
-        conversation_id=conversation_id,
-        chat_text="proceed",
-        action="proceed",
-        headers={"CLIENT-CORRELATION-ID": test_context.get('correlation_id')}
-    )
-    
-    # Save response for validation in then steps
-    test_context['response'] = response
-    logger.info("User confirmed summary by proceeding")
-
-@when('the user submits the complaint')
-def user_submits_complaint(test_context: Dict[str, Any]) -> None:
-    api_client = test_context['api_client']
-    conversation_id = test_context['conversation_id']
-    
-    response = api_client.send_message(
-        conversation_id=conversation_id,
-        chat_text="proceed",
-        action="proceed",
-        headers={"CLIENT-CORRELATION-ID": test_context.get('correlation_id')}
-    )
-    
-    # Save response for validation in then steps
-    test_context['response'] = response
-    logger.info("User submitted the complaint with conversation ID: " + str(conversation_id))
-
-@when('the user responds with the complaint classification')
-def user_responds_with_complaint_classification(test_context: Dict[str, Any]) -> None:
-    api_client = test_context['api_client']
-    conversation_id = test_context['conversation_id']
-    
-    response = api_client.send_message(
-        conversation_id=conversation_id,
-        chat_text="proceed",
-        action="proceed",
-        headers={"CLIENT-CORRELATION-ID": test_context.get('correlation_id')}
-    )
-    
-    # Save response for validation in then steps
-    test_context['response'] = response
-    logger.info("User successfully submitted the complaint with conversation ID: " + str(conversation_id))
-
-# --- Then Steps ---
-@then('the API response should be successful and contain a valid conversation ID')
-def verify_initial_response(test_context: Dict[str, Any]) -> None:
+@then(parsers.parse('the API response should prompt with "{expected_key}"'))
+def verify_api_response_prompt(test_context: Dict[str, Any], expected_key: str) -> None:
     response = test_context.get('response', {})
-    assert response, "No response received from API"
-    assert 'conversationID' in response, "Response missing conversationID"
-    conv_id = response['conversationID']
-    assert TestHelpers.validate_conversation_id(conv_id), \
-        f"Invalid conversation ID format: {conv_id}"
-    logger.info(f"Verified conversation ID: {conv_id}")
-
-@then('the initial response action and text should be as expected')
-def verify_initial_action_and_text(test_context: Dict[str, Any]) -> None:
-    response = test_context.get('response', {})
-    test_data = test_context.get('test_data', {})
-    
-    expected_action_label = test_data.get('expected_initial_action_label', 'Confirm date')
-    if expected_action_label:
-        expected_action = {
-            "action": "proceed",
-            "actionType": "Button",
-            "label": expected_action_label
-        }
-        
-        assert 'actions' in response, "Response missing actions"
-        assert expected_action in response['actions'], \
-            f"Expected action not found. Got: {response['actions']}"
-    
-    expected_text = test_data.get('expected_initial_response_text', 'When was the complaint received?')
-    if expected_text:
-        actual_text = response.get('chatResponseText', '')
-        assert expected_text in actual_text, \
-            f"Expected text '{expected_text}' not found in: '{actual_text}'"
-    
-    logger.info("Verified initial response action and text")
-
-@then('the API response should prompt for the method of complaint')
-def verify_api_responds_complaint_method(test_context: Dict[str, Any]) -> None:
-    response = test_context.get('response', {})
-    expected_text = "How the complaint received?"  # Common prompt for method of complaint
-    
+    expected_text = test_context['test_data'][expected_key]['expected_response']
     actual_text = response.get('chatResponseText', '')
+
     assert expected_text in actual_text, \
-        f"Expected prompt '{expected_text}' not found in: '{actual_text}'"
-    
-    logger.info("Verified API is prompting for method of complaint")
+        f"Expected '{expected_text}' but got '{actual_text}'"
+    logger.info("Verified response for %s: %s", expected_key, expected_text)
 
-@then('the API response should prompt for the account number')
-def verify_api_responds_account_number(test_context: Dict[str, Any]) -> None:
-    response = test_context.get('response', {})
-    expected_text = "Select the account"  # Common prompt for account selection
-    
-    actual_text = response.get('chatResponseText', '')
-    assert expected_text in actual_text, \
-        f"Expected prompt '{expected_text}' not found in: '{actual_text}'"
-    
-    logger.info("Verified API is prompting for account number")
 
-@then('the API response should prompt for complaint details')
-def verify_api_responds_complaint_details(test_context: Dict[str, Any]) -> None:
-    response = test_context.get('response', {})
-    expected_text = "can you tell me about what happened"  # Common prompt for complaint details
-    
-    actual_text = response.get('chatResponseText', '')
-    assert expected_text in actual_text, \
-        f"Expected prompt '{expected_text}' not found in: '{actual_text}'"
-    
-    logger.info("Verified API is prompting for complaint details")
-
-@then('the API response should ask for clarification')
-def verify_clarification_request(test_context: Dict[str, Any]) -> None:
-    """Verify API asks for clarification."""
-    response = test_context.get('response', {})
-    response_text = response.get('chatResponseText', '')
-    assert response_text, "Response text is empty"
-    logger.info("Verified clarification request")
-
-@then('the API response should prompt for contact willingness')
-def verify_contact_willingness_prompt(test_context: Dict[str, Any]) -> None:
-    response = test_context.get('response', {})
-    response_text = response.get('chatResponseText', '')
-    assert response_text, "Response text is empty"
-    logger.info("Verified API is prompting for contact willingness")
-
-@then('the API response should prompt to submit the complaint')
-def verify_prompt_to_submit(test_context: Dict[str, Any]) -> None:
-    response = test_context.get('response', {})
-    response_text = response.get('chatResponseText', '')
-    expected_phrases = ["final classification", "summary", "submit"]
-    found_phrase = any(phrase in response_text for phrase in expected_phrases)
-    assert found_phrase, f"Expected prompt to submit complaint not found in: {response_text}"
-    logger.info("Verified API is prompting to submit the complaint")
-
-@then('the API response should contain a valid chat text')
-def verify_chat_text_exists(test_context: Dict[str, Any]) -> None:
-    response = test_context.get('response', {})
-    assert 'chatResponseText' in response, "Response missing chatResponseText"
-    assert response['chatResponseText'], "Chat text is empty"
-    logger.info("Verified chat text exists in response")
-
-@then('the API response should prompt for complaint classification')
-def verify_complaint_classification(test_context: Dict[str, Any]) -> None:
-    verify_classification_summary_exists(test_context)
+# -------- Final confirmation --------
 
 @then('the final response should contain a confirmation and a valid interaction ID')
 def verify_final_response(test_context: Dict[str, Any]) -> None:
-    response = test_context.get('response', {})
-    response_text = response.get('chatResponseText', '')
-    
-    # Verify confirmation message
-    assert 'Thanks for submitting the Complaint' in response_text, \
-        "Confirmation message not found"
-    
-    # Verify interaction ID format
-    pattern = r'INT[EOL]-\d{6}-\w{12}'
-    match = re.search(pattern, response_text)
-    
-    assert match, f"No valid Interaction Reference Number found in: {response_text}"
-    
-    interaction_id = match.group(0)
-    test_context['interaction_id'] = interaction_id
-    
-    logger.info(f"Verified final response with Interaction ID: {interaction_id}")
+    response_text = test_context.get('response', {}).get('chatResponseText', '')
 
-@then('the API response should prompt for classification summary')
-def verify_classification_summary_exists(test_context: Dict[str, Any]) -> None:
-    response = test_context.get('response', {})
-    assert 'chatResponseText' in response, "Response missing chatResponseText"
-    assert response['chatResponseText'], "Chat text is empty"
-    expected_phrases = ["Final classification summary", "Complaint type", "Resolution note"]
-    found_phrase = any(phrase in response['chatResponseText'] for phrase in expected_phrases)
-    assert found_phrase, f"Expected phrases not found in chat text: {response['chatResponseText']}"
-    logger.info("Verified chat text exists in response")
+    assert "Thanks for submitting the Complaint" in response_text, \
+        "Final confirmation not found"
+
+    pattern = r'INT[E0L]-\d{6}-\w{12}'
+    match = re.search(pattern, response_text)
+    assert match, f"No valid Interaction ID in: {response_text}"
+
+    test_context['interaction_id'] = match.group(0)
+    logger.info("Final response verified | interactionID=%s", match.group(0))
