@@ -119,3 +119,9 @@ class ChatbotAPIClient:
             headers=headers,
             correlation_id=correlation_id
         )
+    def close(self) -> None:
+        """Close the Playwright request context and clean up resources."""
+        if self.context:
+            self.context.dispose()
+        self.logger.info("API Client session closed")
+    
