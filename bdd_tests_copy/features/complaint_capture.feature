@@ -1,37 +1,28 @@
-Feature: Complaint Capture Workflow
+Feature: EO Escalated Complaint end-to-end capture
+  Verify that the EO Escalated Complaint end-to-end complaint capture process
+  is working using the AI Chatbot API.
 
-As a user
-I want to capture customer complaints through the chatbot
-So that complaints can be properly recorded and tracked
-
-Scenario Outline: Verify end-to-end complaint capture process using data from an external source
+  Background:
     Given the chatbot API is available and test data is loaded
-    When I send the initial complaint request
-    Then the API response should be successful and contain a valid conversation ID
-    And the initial response action and text should be as expected
 
-    When the user responds with the complaint date
-    Then the API response should prompt for the method of complaint
-    When the user responds with the method of complaint
-    Then the API response should prompt for the account number
+  Scenario Outline: Verify complaint workflow from user input to database storage
+    When the user responds with "<field_key>"
+    Then the API response should prompt with "<expected_key>"
 
-    When the user responds with the account number
-    Then the API response should prompt for complaint details
+  Examples:
+    | field_key  | expected_key               |
+    | chatTest3  | account_number_response    |
+    | chatTest4  | elaborate_quest_response   |
+    | chatTest5  | followup_question_response |
+    | chatTest6  | indicator_question_response|
+    | chatTest7  | clarification_summary      |
+    | chatText8  | preferred_comm_select_response |
+    | chatText9  | preferred_comm_response    |
+    | chatText10 | classification_summary     |
+    | chatText11 | comp_submission_response   |
 
-    When the user responds with the complaint details
-    Then the API response should ask for clarification
-
-    When the user provides a final summary comment
-    Then the API response should prompt for contact willingness
-
-    When the user responds with the contact willingness
-    Then the API response should prompt for classification summary
-
-    When the user confirms the summary
-    Then the API response should contain a valid chat text
-
-    When the user submits the complaint
-    Then the API response should prompt for complaint classification
-
-    When the user responds with the complaint classification
+  Scenario: Verify final confirmation and persistence
+    When the user responds with "chatText11"
     Then the final response should contain a confirmation and a valid interaction ID
+    And verify the conversation details are stored properly in the Complaints AI database
+    And verify the complaint details are stored properly in the Complaints database
