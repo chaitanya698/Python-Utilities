@@ -57,7 +57,7 @@ class ChatbotAPIClient:
         else:
             self.logger.info("SSL certificate verification enabled")
 
-    def _make_request(
+        def _make_request(
         self,
         method: str,
         endpoint: str,
@@ -65,7 +65,6 @@ class ChatbotAPIClient:
         headers: Optional[Dict] = None,
         correlation_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Perform an API request via Playwright with tracking and error handling."""
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         correlation_id = correlation_id or str(uuid.uuid4())
 
@@ -73,19 +72,18 @@ class ChatbotAPIClient:
         if headers:
             req_headers.update(headers)
 
-        # Track request
         if self.tracker:
             self.tracker.add_request(method, url, req_headers, data, correlation_id)
 
         self.logger.info(f"[{correlation_id}] {method} {url}")
 
         start = time.time()
-        response = self.context.request(
+        response = self.context.fetch(
             method=method,
             url=url,
-            data=json.dumps(data) if data else None,
             headers=req_headers,
             timeout=self.timeout,
+            json=data if data else None  # ✅ send as JSON
         )
         duration = time.time() - start
         self.logger.info(f"[{correlation_id}] Response Status: {response.status}")
@@ -106,6 +104,7 @@ class ChatbotAPIClient:
             )
 
         return resp_data
+
 
     def initiate_chat(self, request_data: Dict[str, Any],
                       correlation_id: Optional[str] = None) -> Dict[str, Any]:
