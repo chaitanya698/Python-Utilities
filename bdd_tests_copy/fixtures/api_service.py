@@ -1,8 +1,11 @@
-import uuid
+import os
+import ssl
 import time
-from typing import Dict, Any, Optional, Callable
+import uuid
+from typing import Dict, Any, Optional, Callable, List, Union
 from urllib.parse import urlparse
 
+import playwright  # for version log
 from playwright.sync_api import Playwright, APIRequestContext, Response
 
 from bdd_tests.config.settings import Settings
@@ -10,8 +13,30 @@ from bdd_tests.utils.logger_config import get_logger
 from bdd_tests.utils.request_response_tracker import RequestResponseTracker
 
 
+def _candidate_origins(base_url: str) -> List[str]:
+    """
+    Produce a set of origins that might be involved due to redirects / default ports.
+    """
+    p = urlparse(base_url)
+    scheme = p.scheme or "https"
+    host = p.hostname
+    if not host:
+        return []
+    ports = set()
+    # explicit port if present
+    if p.port:
+        ports.add(p.port)
+    # default ports
+    ports.add(443 if scheme == "https" else 80)
+
+    origins = {f"{scheme}://{host}:{port}" for port in ports}
+    # also include without explicit port (some gateways match on that format)
+    origins.add(f"{scheme}://{host}")
+    return sorted(origins)
+
+
 class ChatbotAPIClient:
-    """Playwright-based API client for chatbot interactions."""
+    """Playwright-based API client with robust mTLS configuration and retries."""
 
     def __init__(self, config: Settings, playwright: Playwright,
                  tracker: Optional[RequestResponseTracker] = None):
@@ -26,42 +51,64 @@ class ChatbotAPIClient:
     # ------------------------
     # Session / Certificates
     # ------------------------
-    def _create_session(self, playwright: Playwright) -> None:
+    def _create_session(self, pw: Playwright) -> None:
         """
-        Create a Playwright APIRequestContext with SSL and client certificate handling.
-        IMPORTANT: The 'origin' must EXACTLY match scheme + host + port of requests using the cert.
+        Create APIRequestContext with SSL/mTLS. Supports:
+          - PEM pair: CERT_PEM_PATH + KEY_PEM_PATH (+ optional chain in cert)
+          - PKCS12/PFX: PFX_PATH + PFX_PASSPHRASE
+          - Multiple candidate origins (scheme+host and scheme+host:port)
         """
+        self.logger.info("Playwright version: %s", getattr(playwright, "__version__", "unknown"))
+
         extra_headers = {
-            "User-Agent": "ChatbotAutomation/Playwright",
-            # Do NOT force Content-Type; Playwright sets it for json=... automatically.
             "Accept": "application/json",
+            "User-Agent": "ChatbotAutomation/Playwright",
         }
 
-        # SSL verification
         ignore_https_errors = not bool(self.config.VERIFY_SSL)
+        client_certs: Optional[List[Dict[str, str]]] = None
 
-        # Compute exact origin for client certs
-        parsed = urlparse(self.base_url)
-        scheme = parsed.scheme or "https"
-        host = parsed.hostname
-        port = parsed.port or (443 if scheme == "https" else 80)
-        exact_origin = f"{scheme}://{host}:{port}"
+        cert_origins = _candidate_origins(self.base_url)
 
-        client_certs = None
-        if self.config.CERT_PEM_PATH and self.config.KEY_PEM_PATH:
+        # ----- Pick certificate mode -----
+        # Mode 1: PKCS#12 / PFX
+        if getattr(self.config, "PFX_PATH", None):
+            pfx_path = self.config.PFX_PATH
+            if not os.path.isfile(pfx_path):
+                raise FileNotFoundError(f"PFX file not found: {pfx_path}")
+            passphrase = getattr(self.config, "PFX_PASSPHRASE", None) or ""
             client_certs = [{
-                "origin": exact_origin,
-                "cert": self.config.CERT_PEM_PATH,
-                "key": self.config.KEY_PEM_PATH,
-            }]
-            self.logger.info(
-                "Configured client certificate for origin=%s | cert=%s | key=%s",
-                exact_origin, self.config.CERT_PEM_PATH, self.config.KEY_PEM_PATH
-            )
+                "origin": o,
+                "pfx": pfx_path,
+                "passphrase": passphrase
+            } for o in cert_origins]
+            self.logger.info("Configured PKCS#12 client certificate for origins=%s | pfx=%s",
+                             cert_origins, pfx_path)
 
-        self.context = playwright.request.new_context(
-            base_url=self.base_url,                  # allows passing just endpoint paths
-            ignore_https_errors=ignore_https_errors, # mirrors requests.verify=False
+        # Mode 2: PEM pair
+        elif getattr(self.config, "CERT_PEM_PATH", None) and getattr(self.config, "KEY_PEM_PATH", None):
+            cert_path = self.config.CERT_PEM_PATH
+            key_path = self.config.KEY_PEM_PATH
+            if not os.path.isfile(cert_path):
+                raise FileNotFoundError(f"CERT PEM not found: {cert_path}")
+            if not os.path.isfile(key_path):
+                raise FileNotFoundError(f"KEY PEM not found: {key_path}")
+
+            client_certs = [{
+                "origin": o,
+                "cert": cert_path,
+                "key": key_path
+            } for o in cert_origins]
+            self.logger.info("Configured PEM client certificate for origins=%s | cert=%s | key=%s",
+                             cert_origins, cert_path, key_path)
+
+        else:
+            self.logger.warning("No client certificate configured; mTLS endpoints will fail.")
+
+        # Build context
+        self.context = pw.request.new_context(
+            base_url=self.base_url,
+            ignore_https_errors=ignore_https_errors,
             extra_http_headers=extra_headers,
             client_certificates=client_certs
         )
@@ -70,6 +117,15 @@ class ChatbotAPIClient:
             self.logger.warning("SSL verification DISABLED (ignore_https_errors=True)")
         else:
             self.logger.info("SSL verification ENABLED")
+
+        # Optional: quick probe to force TLS and surface early mTLS issues
+        try:
+            probe = self.context.get("/", timeout=10_000)
+            if probe.status >= 400:
+                self.logger.warning("TLS probe status=%s body=%s",
+                                    probe.status, probe.text()[:300])
+        except Exception as e:
+            self.logger.warning("TLS probe raised %s (usually harmless): %s", type(e).__name__, e)
 
     # ------------------------
     # Core request with retry
@@ -85,49 +141,36 @@ class ChatbotAPIClient:
         max_retries: int = 2,
         backoff_base: float = 0.4,
     ) -> Response:
-        """
-        Call a Playwright request function with small bounded retries on 5xx/429.
-        """
         last_exc: Optional[Exception] = None
         for attempt in range(0, max_retries + 1):
-            start = time.time()
+            t0 = time.time()
             try:
                 resp = fn(
                     url_or_path,
-                    json=json_body if json_body is not None else None,
+                    json=json_body if json_body is not None else None,  # ✅ proper JSON body
                     headers=headers,
                     timeout=self.timeout,
-                    verify_ssl=False
                 )
-                duration = time.time() - start
-                self.logger.info(
-                    "[%s] HTTP %s (%d ms) -> %s",
-                    correlation_id, resp.status, int(duration * 1000), url_or_path
-                )
+                ms = int((time.time() - t0) * 1000)
+                self.logger.info("[%s] HTTP %s (%d ms) -> %s", correlation_id, resp.status, ms, url_or_path)
 
-                # Retry on transient statuses
                 if resp.status in (429, 500, 502, 503, 504):
                     if attempt < max_retries:
-                        body_preview = resp.text()[:300]
-                        self.logger.warning(
-                            "[%s] Transient status %s, retrying... (attempt %d/%d) Body: %s",
-                            correlation_id, resp.status, attempt + 1, max_retries, body_preview
-                        )
+                        self.logger.warning("[%s] Transient %s. Retrying %d/%d. Body: %s",
+                                            correlation_id, resp.status, attempt + 1, max_retries,
+                                            resp.text()[:300])
                         time.sleep(backoff_base * (2 ** attempt))
                         continue
                 return resp
             except Exception as e:
                 last_exc = e
                 if attempt < max_retries:
-                    self.logger.warning(
-                        "[%s] Exception during request (%s). Retrying attempt %d/%d ...",
-                        correlation_id, type(e).__name__, attempt + 1, max_retries
-                    )
+                    self.logger.warning("[%s] Exception %s. Retrying %d/%d...",
+                                        correlation_id, type(e).__name__, attempt + 1, max_retries)
                     time.sleep(backoff_base * (2 ** attempt))
                     continue
                 break
 
-        # If we get here, all retries failed
         if last_exc:
             self.logger.error("[%s] Request failed after retries: %s", correlation_id, last_exc)
             raise last_exc
@@ -141,41 +184,33 @@ class ChatbotAPIClient:
         headers: Optional[Dict[str, str]] = None,
         correlation_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """
-        Perform an API request via Playwright with tracking and error handling.
-        NOTE: Use endpoint PATH (e.g., '/api/agentic-chat/v1') since base_url is set.
-        """
         if not self.context:
             raise RuntimeError("API request context not initialized")
 
         path = f"/{endpoint.lstrip('/')}"
         correlation_id = correlation_id or str(uuid.uuid4())
 
-        # Per-request headers
         req_headers = {"CLIENT-CORRELATION-ID": correlation_id}
         if headers:
             req_headers.update(headers)
 
-        # Tracker (request)
         if self.tracker:
             self.tracker.add_request(method, self.base_url + path, req_headers, data, correlation_id)
 
-        # Choose the right verb function (Playwright Python style)
-        method_lower = method.lower()
-        if method_lower == "get":
+        m = method.lower()
+        if m == "get":
             verb = self.context.get
-        elif method_lower == "post":
+        elif m == "post":
             verb = self.context.post
-        elif method_lower == "put":
+        elif m == "put":
             verb = self.context.put
-        elif method_lower == "patch":
+        elif m == "patch":
             verb = self.context.patch
-        elif method_lower == "delete":
+        elif m == "delete":
             verb = self.context.delete
         else:
             raise ValueError(f"Unsupported HTTP method: {method}")
 
-        # Do the request with a few retries for 5xx/429
         resp = self._call_with_retry(
             verb,
             url_or_path=path,
@@ -184,7 +219,6 @@ class ChatbotAPIClient:
             correlation_id=correlation_id
         )
 
-        # Basic logging + body capture on failure
         try:
             resp.raise_for_status()
         except Exception as e:
@@ -198,38 +232,26 @@ class ChatbotAPIClient:
                 self.tracker.add_error("HTTPError", f"status={resp.status} body={body[:1000]}", correlation_id)
             raise
 
-        # Parse JSON (fallback to text)
         try:
-            resp_data: Any = resp.json()
+            payload: Any = resp.json()
         except Exception:
-            resp_data = resp.text()
+            payload = resp.text()
 
-        # Tracker (response)
         if self.tracker:
-            self.tracker.add_response(
-                resp.status,
-                dict(resp.headers),
-                resp_data,
-                0.0,  # duration is captured in logs above; you can wire it through if you prefer
-                correlation_id
-            )
+            self.tracker.add_response(resp.status, dict(resp.headers), payload, 0.0, correlation_id)
 
-        return resp_data
+        return payload
 
     # ------------------------
-    # Domain functions
+    # Domain calls
     # ------------------------
     def initiate_chat(self, request_data: Dict[str, Any],
                       correlation_id: Optional[str] = None) -> Dict[str, Any]:
-        """Initiate a new chat conversation."""
         correlation_id = correlation_id or f"INIT-{uuid.uuid4()}"
         if "conversationId" not in request_data:
             request_data["conversationId"] = "initial"
-
         self.logger.info("Initiating chat | correlation=%s", correlation_id)
-        return self._make_request("POST", "/api/agentic-chat/v1",
-                                  data=request_data,
-                                  correlation_id=correlation_id)
+        return self._make_request("POST", "/api/agentic-chat/v1", data=request_data, correlation_id=correlation_id)
 
     def send_message(
         self,
@@ -239,10 +261,8 @@ class ChatbotAPIClient:
         headers: Optional[Dict[str, str]] = None,
         correlation_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Send a message in an existing conversation."""
         correlation_id = correlation_id or (headers.get("CLIENT-CORRELATION-ID") if headers else None) \
                          or f"MSG-{uuid.uuid4()}"
-
         payload = {
             "channelID": "BBVA",
             "conversationID": conversation_id,
@@ -250,16 +270,11 @@ class ChatbotAPIClient:
             "chatText": chat_text,
             "action": action
         }
-
-        self.logger.info("Sending message | conversationID=%s | correlation=%s",
-                         conversation_id, correlation_id)
-        return self._make_request("POST", "/api/agentic-chat/v1",
-                                  data=payload,
-                                  headers=headers,
+        self.logger.info("Sending message | conversationID=%s | correlation=%s", conversation_id, correlation_id)
+        return self._make_request("POST", "/api/agentic-chat/v1", data=payload, headers=headers,
                                   correlation_id=correlation_id)
 
     def close(self) -> None:
-        """Dispose Playwright request context."""
         if self.context:
             self.context.dispose()
         self.logger.info("API Client session closed")
