@@ -1,6 +1,7 @@
 import os
 import time
 import uuid
+import json
 import threading
 from typing import Dict, Any, Optional, Callable, List, Tuple, Union
 from urllib.parse import urlparse
@@ -108,47 +109,56 @@ class _PlaywrightWorker:
                 pass
 
     def _execute_task(self, task: Task) -> Response:
-        method, path, json_body, headers, timeout_ms, max_retries, backoff_base = task
-        path = f"/{path.lstrip('/')}"
-        m = method.lower()
-        verb_map: Dict[str, Callable[..., Response]] = {
-            "get": self._context.get,
-            "post": self._context.post,
-            "put": self._context.put,
-            "patch": self._context.patch,
-            "delete": self._context.delete,
-        }
-        if m not in verb_map:
-            raise ValueError(f"Unsupported method {method}")
+    method, path, json_body, headers, timeout_ms, max_retries, backoff_base = task
+    path = f"/{path.lstrip('/')}"
+    m = method.lower()
+    verb_map: Dict[str, Callable[..., Response]] = {
+        "get": self._context.get,
+        "post": self._context.post,
+        "put": self._context.put,
+        "patch": self._context.patch,
+        "delete": self._context.delete,
+    }
+    if m not in verb_map:
+        raise ValueError(f"Unsupported method {method}")
 
-        verb = verb_map[m]
-        last_exc: Optional[Exception] = None
+    verb = verb_map[m]
+    last_exc: Optional[Exception] = None
 
-        for attempt in range(0, max_retries + 1):
-            t0 = time.time()
-            try:
-                resp = verb(path, json=json_body if json_body is not None else None,
-                            headers=headers, timeout=timeout_ms)
-                ms = int((time.time() - t0) * 1000)
-                self.logger.info("HTTP %s (%d ms) %s", resp.status, ms, path)
+    for attempt in range(0, max_retries + 1):
+        t0 = time.time()
+        try:
+            # ---- JSON body handling for Playwright Python ----
+            send_headers = dict(headers or {})
+            body = None
+            if json_body is not None:
+                # ensure JSON string + header
+                body = json.dumps(json_body)
+                # don't clobber an explicit content-type if you set one upstream
+                if "Content-Type" not in {k.title(): v for k, v in send_headers.items()}:
+                    send_headers["Content-Type"] = "application/json"
 
-                if resp.status in (429, 500, 502, 503, 504) and attempt < max_retries:
-                    self.logger.warning("Transient %s. Retry %d/%d. Body: %s",
-                                        resp.status, attempt + 1, max_retries, resp.text()[:300])
-                    time.sleep(backoff_base * (2 ** attempt))
-                    continue
-                return resp
-            except Exception as e:
-                last_exc = e
-                if attempt < max_retries:
-                    self.logger.warning("Exception %s. Retry %d/%d...", type(e).__name__, attempt + 1, max_retries)
-                    time.sleep(backoff_base * (2 ** attempt))
-                    continue
-                break
+            resp = verb(path, data=body, headers=send_headers, timeout=timeout_ms)
+            ms = int((time.time() - t0) * 1000)
+            self.logger.info("HTTP %s (%d ms) %s", resp.status, ms, path)
 
-        if last_exc:
-            raise last_exc
-        raise RuntimeError("Request failed after retries (unknown)")
+            if resp.status in (429, 500, 502, 503, 504) and attempt < max_retries:
+                self.logger.warning("Transient %s. Retry %d/%d. Body: %s",
+                                    resp.status, attempt + 1, max_retries, resp.text()[:300])
+                time.sleep(backoff_base * (2 ** attempt))
+                continue
+            return resp
+        except Exception as e:
+            last_exc = e
+            if attempt < max_retries:
+                self.logger.warning("Exception %s. Retry %d/%d...", type(e).__name__, attempt + 1, max_retries)
+                time.sleep(backoff_base * (2 ** attempt))
+                continue
+            break
+
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("Request failed after retries (unknown)")
 
     def submit(self, task: Task, wait: bool = True, timeout: Optional[float] = None) -> Response:
         """Submit a task to the worker; block until result if wait=True."""
