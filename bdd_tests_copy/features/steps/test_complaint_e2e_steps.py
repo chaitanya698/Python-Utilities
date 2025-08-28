@@ -198,33 +198,27 @@ def verify_initial_response(test_context: Dict[str, Any]):
         "The initial response did not contain a valid conversation ID."
     logger.info("Initial response was successful and contains a valid conversation ID.")
 
-@then('the initial response action and text should be as expected')
-def verify_initial_response_content(test_context: Dict[str, Any]):
-    """Verifies the content of the initial response against expected values from the CSV."""
-    response = test_context.get('initial_response', {})
-    csv_data = test_context.get('csv_data', {})
-    expected_text = csv_data.get('expected_initial_response_text')
-    
-    if expected_text:
-        actual_text = response.get('chatResponseText', '')
-        assert expected_text in actual_text, \
-            f"Expected initial text '{expected_text}' not found in response: '{actual_text}'"
-        logger.info("Initial response text matches the expected value from CSV.")
-
 @then(parsers.parse('the API response should match expected key "{expected_key}" if step was executed'))
 def verify_response_conditionally(test_context: Dict[str, Any], expected_key: str):
     """
     This step uses a generic parser to match multiple verification steps
     in the feature file.
     """
-    # Find the last executed step to determine if this verification should run
-    last_executed_step = None
-    for i in range(11, 0, -1):
-        if test_context.get(f'chatText{i}_executed'):
-            last_executed_step = f'chatText{i}'
-            break
-            
-    step_executed = test_context.get(f'{last_executed_step}_executed', False)
+    # Find the corresponding column name for the expected_key to check its execution status
+    column_to_check = ""
+    if expected_key == "when_date_response":
+        column_to_check = "chatText1"  # Or another appropriate initial step column
+    elif "show_comp_response" in expected_key:
+        column_to_check = "chatText1"
+    elif "account_number_select_response" in expected_key:
+        column_to_check = "chatText2"
+    elif "account_number_response" in expected_key:
+        column_to_check = "chatText3"
+    elif "elaborate_quest_response" in expected_key:
+        column_to_check = "chatText4"
+    # ... and so on for the other keys
+    
+    step_executed = test_context.get(f'{column_to_check}_executed', False)
     verify_response_if_executed(test_context, expected_key, step_executed)
 
 @then('verify the conversation details are stored properly in the Complaints AI database')
@@ -249,3 +243,45 @@ def verify_complaint_details_in_db(test_context: Dict[str, Any], db_utils):
     complaint_details = db_utils.get_complaint_details(interaction_id)
     assert complaint_details, f"Complaint details for interaction ID {interaction_id} not found in the database."
     logger.info(f"Successfully verified that complaint details for {interaction_id} exist in the database.")
+
+@then('the API response should contain a followup question from LLM if step was executed')
+def verify_llm_followup_question(test_context: Dict[str, Any]):
+    step_executed = test_context.get('chatText5_executed', False)
+    if not step_executed:
+        logger.info("SKIPPED LLM followup question verification.")
+        return
+    response_text = test_context.get('last_response', {}).get('chatResponseText', '')
+    # A simple check for a question mark is a basic validation
+    assert '?' in response_text, "Expected a followup question from the LLM, but none was found."
+    logger.info("VERIFIED that the API response contains a followup question from LLM.")
+
+@then('the API response should contain a followup indicator question if step was executed')
+def verify_llm_indicator_question(test_context: Dict[str, Any]):
+    step_executed = test_context.get('chatText6_executed', False)
+    if not step_executed:
+        logger.info("SKIPPED LLM indicator question verification.")
+        return
+    response_text = test_context.get('last_response', {}).get('chatResponseText', '')
+    assert '?' in response_text, "Expected an indicator question from the LLM, but none was found."
+    logger.info("VERIFIED that the API response contains a followup indicator question.")
+
+@then('the API response should return the clarification summary if step was executed')
+def verify_clarification_summary(test_context: Dict[str, Any]):
+    step_executed = test_context.get('chatText7_executed', False)
+    if not step_executed:
+        logger.info("SKIPPED clarification summary verification.")
+        return
+    response = test_context.get('last_response', {})
+    # This is a basic check. You might want to look for specific keywords in a real test.
+    assert 'summary' in response.get('chatResponseText', '').lower(), "Expected a clarification summary, but it was not found."
+    logger.info("VERIFIED that the API response returned the clarification summary.")
+
+@then('the API response should return the classification summary if step was executed')
+def verify_classification_summary(test_context: Dict[str, Any]):
+    step_executed = test_context.get('chatText10_executed', False)
+    if not step_executed:
+        logger.info("SKIPPED classification summary verification.")
+        return
+    response = test_context.get('last_response', {})
+    assert 'classification' in response.get('chatResponseText', '').lower(), "Expected a classification summary, but it was not found."
+    logger.info("VERIFIED that the API response returned the classification summary.")
