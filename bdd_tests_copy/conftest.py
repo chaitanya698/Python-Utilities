@@ -101,47 +101,49 @@ def pytest_bdd_before_step(request, feature, scenario, step, step_func):
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_bdd_after_step(request, feature, scenario, step, step_func, step_func_args):
-    """Capture passed step after execution, including step and request details."""
+    """Capture passed step after execution, including request and response details."""
     global _current_test_id
     details = dict(step_func_args) if step_func_args else {}
+    test_context = details.get('test_context', {})
     
-    # Extract request/response details if test_context is present
-    test_context = details.get('test_context')
-    if isinstance(test_context, dict):
-        if test_context.get('request'):
-            details['request'] = test_context['request']
-        if test_context.get('response'):
-            details['response'] = test_context['response']
-    
+    # --- MODIFICATION: Capture request and response for the report ---
     step_info = {
         'test_id': _current_test_id or 'unknown',
         'type': step.keyword.strip().lower(),
         'description': step.name,
-        'details': details,
-        'status': 'passed'
+        'status': 'passed',
+        'request': test_context.get('request'),
+        'response': test_context.get('response')
     }
     _report_generator.add_step_result(step_info)
+    
+    # Clear request/response from context to avoid carrying it to the next step
+    test_context['request'] = None
+    test_context['response'] = None
 
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_bdd_step_error(request, feature, scenario, step, step_func, step_func_args, exception):
-    """Capture failed step immediately when an error occurs."""
+    """Capture failed step, including request and response details."""
     global _current_test_id
-    error_msg = f"{type(exception).__name__}: {exception}"
-    tb = getattr(exception, '__traceback__', None)
-    tb_str = ''.join(traceback.format_exception(type(exception), exception, tb, limit=2)).strip()
-    error_msg += f"<br>{tb_str.replace('\n', '<br>')}"
+    details = dict(step_func_args) if step_func_args else {}
+    test_context = details.get('test_context', {})
     
+    error_msg = f"{type(exception).__name__}: {exception}"
+    tb_str = ''.join(traceback.format_tb(exception.__traceback__))
+    
+    # --- MODIFICATION: Capture request and response for the report ---
     step_info = {
         'test_id': _current_test_id or 'unknown',
         'type': step.keyword.strip().lower(),
         'description': step.name,
         'status': 'failed',
-        'error': error_msg
+        'error': f"{error_msg}\n{tb_str}",
+        'request': test_context.get('request'),
+        'response': test_context.get('response')
     }
     _report_generator.add_step_result(step_info)
     logger.error(f"Step '{step.name}' failed: {error_msg}")
-
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_runtest_makereport(item, call):
