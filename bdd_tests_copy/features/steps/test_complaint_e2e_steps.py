@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 # --- Scenario Definition ---
 
 @scenario(
-    '../features/complaint_workflow_end_to_end.feature',
+    '../features/complaint_capture_end_to_end_test.feature',
     'Execute complaint capture workflow for test case "<test_case_id>"'
 )
 def test_complaint_workflow(test_data_row):
