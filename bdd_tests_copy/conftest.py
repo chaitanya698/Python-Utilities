@@ -1,14 +1,10 @@
-"""
-Pytest configuration file for BDD test automation framework.
-Provides fixtures, hooks, and configuration for test execution.
-"""
-
 import os
 import sys
 import csv
 import json
 import platform
 import atexit
+import traceback
 from datetime import datetime
 from typing import Dict, Any, Generator, List, Optional
 from pathlib import Path
@@ -143,6 +139,7 @@ def pytest_bdd_step_error(request, feature, scenario, step, step_func, step_func
         'response': test_context.get('response')
     }
     _report_generator.add_step_result(step_info)
+    logger = get_logger(__name__)
     logger.error(f"Step '{step.name}' failed: {error_msg}")
 
 @pytest.hookimpl(tryfirst=True)
@@ -240,63 +237,160 @@ def data_loader() -> DataLoader:
     return DataLoader()
 
 
-@pytest.fixture(scope="session")
-def enhanced_data_loader() -> DataLoader:
-    """Enhanced data loader with validation capabilities."""
-    class EnhancedDataLoader(DataLoader):
-        
-        def load_complaint_workflow_csv(self, filename: str = "complaint_workflow_data.csv") -> List[Dict[str, Any]]:
-            """Load and validate complaint workflow CSV data with proper encoding handling."""
-            # Try different encodings to handle various CSV formats
-            encodings_to_try = ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252', 'iso-8859-1']
-            
-            for encoding in encodings_to_try:
-                try:
-                    data = self.load_csv(filename, encoding=encoding)
-                    logger = get_logger(__name__)
-                    logger.info(f"Successfully loaded CSV with {encoding} encoding")
-                    
-                    # Validate required columns
-                    required_columns = ['test_case_id']
-                    chat_text_columns = [f'chatText{i}' for i in range(1, 12)]
-                    
-                    for row in data:
-                        # Clean up data - remove BOM and extra whitespace
-                        for key in list(row.keys()):
-                            clean_key = key.replace('\ufeff', '').strip()
-                            if clean_key != key:
-                                row[clean_key] = row.pop(key)
-                        
-                        # Validate at least one chatText column has data
-                        has_valid_chat_text = any(
-                            row.get(col, '').strip() for col in chat_text_columns
-                        )
-                        
-                        if not has_valid_chat_text:
-                            logger.warning(f"Test case {row.get('test_case_id', 'unknown')} has no valid chatText data")
-                    
-                    return data
-                    
-                except UnicodeDecodeError:
-                    continue
-                except Exception as e:
-                    logger = get_logger(__name__)
-                    logger.warning(f"Failed to load CSV with {encoding} encoding: {e}")
-                    continue
-            
-            raise Exception(f"Failed to load CSV file with any of the tried encodings: {encodings_to_try}")
-        
-        def get_chat_text_columns(self, row: Dict[str, Any]) -> Dict[str, str]:
-            """Extract all chatText columns with values from a row."""
-            chat_text_data = {}
-            for i in range(1, 12):
-                column_name = f'chatText{i}'
-                value = str(row.get(column_name, '')).strip()
-                if value and value.lower() not in ['', 'n/a', 'null', 'none', 'nan']:
-                    chat_text_data[column_name] = value
-            return chat_text_data
+class RobustDataLoader(DataLoader):
+    """Enhanced data loader with robust encoding handling for CSV files."""
     
-    return EnhancedDataLoader()
+    def load_csv_with_multiple_encodings(self, filename: str, encodings: List[str] = None) -> List[Dict[str, Any]]:
+        """Load CSV with multiple encoding attempts to handle BOM and various encodings."""
+        if encodings is None:
+            # Comprehensive list of encodings to try, prioritizing UTF variants that handle BOM
+            encodings = [
+                'utf-8-sig',      # UTF-8 with BOM
+                'utf-8',          # Standard UTF-8
+                'utf-16',         # UTF-16 with BOM detection
+                'utf-16le',       # UTF-16 Little Endian
+                'utf-16be',       # UTF-16 Big Endian  
+                'latin1',         # ISO-8859-1
+                'cp1252',         # Windows-1252
+                'iso-8859-1',     # ISO Latin-1
+                'ascii'           # ASCII fallback
+            ]
+        
+        filepath = self.data_dir / filename
+        
+        if not filepath.exists():
+            raise FileNotFoundError(f"CSV file not found: {filepath}")
+        
+        logger = get_logger(__name__)
+        logger.info(f"Attempting to load CSV: {filepath}")
+        
+        for encoding in encodings:
+            try:
+                logger.debug(f"Trying encoding: {encoding}")
+                
+                with open(filepath, 'r', encoding=encoding, newline='') as file:
+                    # Test read a small sample first
+                    file.seek(0)
+                    sample = file.read(512)  # Read first 512 bytes
+                    
+                    # Reset to beginning and read full content
+                    file.seek(0)
+                    reader = csv.DictReader(file)
+                    data = list(reader)
+                
+                logger.info(f"✅ Successfully loaded {len(data)} rows using {encoding} encoding")
+                return data
+                
+            except (UnicodeDecodeError, UnicodeError) as e:
+                logger.debug(f"❌ Encoding {encoding} failed: {e}")
+                continue
+            except Exception as e:
+                logger.warning(f"⚠️  Failed with {encoding}: {type(e).__name__}: {e}")
+                continue
+        
+        # If all encodings fail, provide detailed error message
+        raise Exception(
+            f"❌ Failed to load CSV file '{filename}' with any encoding. "
+            f"Tried encodings: {', '.join(encodings)}. "
+            f"File may be corrupted or in an unsupported format."
+        )
+    
+    def clean_csv_data(self, data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Clean CSV data by removing BOM characters and normalizing values."""
+        cleaned_data = []
+        logger = get_logger(__name__)
+        
+        for row_idx, row in enumerate(data):
+            cleaned_row = {}
+            
+            for original_key, value in row.items():
+                # Clean column names - remove BOM characters and whitespace
+                clean_key = (original_key
+                           .replace('\ufeff', '')      # UTF-8 BOM
+                           .replace('\ufffe', '')      # UTF-16 BOM  
+                           .replace('\u0000', '')      # Null characters
+                           .strip())
+                
+                # Clean values
+                if isinstance(value, str):
+                    clean_value = (value
+                                 .replace('\ufeff', '')
+                                 .replace('\ufffe', '')
+                                 .replace('\u0000', '')
+                                 .strip())
+                else:
+                    clean_value = value
+                
+                cleaned_row[clean_key] = clean_value
+            
+            cleaned_data.append(cleaned_row)
+            
+            if row_idx == 0:
+                logger.debug(f"Sample cleaned row keys: {list(cleaned_row.keys())}")
+        
+        return cleaned_data
+    
+    def load_complaint_workflow_csv(self, filename: str = "complaint_data.csv") -> List[Dict[str, Any]]:
+        """Load and validate complaint workflow CSV data with robust encoding and validation."""
+        logger = get_logger(__name__)
+        logger.info(f"🔄 Loading complaint workflow CSV: {filename}")
+        
+        try:
+            # Load with robust encoding handling
+            raw_data = self.load_csv_with_multiple_encodings(filename)
+            logger.info(f"📄 Raw data loaded: {len(raw_data)} rows")
+            
+            # Clean the data
+            cleaned_data = self.clean_csv_data(raw_data)
+            logger.info(f"🧹 Data cleaned: {len(cleaned_data)} rows")
+            
+            # Validate and filter data
+            validated_data = []
+            chat_text_columns = [f'chatText{i}' for i in range(1, 12)]
+            
+            for row in cleaned_data:
+                test_case_id = row.get('test_case_id', '').strip()
+                
+                # Skip rows without test case ID
+                if not test_case_id:
+                    logger.debug("⚠️  Skipping row without test_case_id")
+                    continue
+                
+                # Check for valid chatText data
+                valid_chat_texts = []
+                for col in chat_text_columns:
+                    value = str(row.get(col, '')).strip()
+                    # Consider non-empty values that aren't common placeholders
+                    if value and value.lower() not in ['', 'n/a', 'null', 'none', 'nan', '""', "''", 'empty', 'no', 'false']:
+                        valid_chat_texts.append(col)
+                
+                if valid_chat_texts:
+                    validated_data.append(row)
+                    logger.debug(f"✅ {test_case_id}: {len(valid_chat_texts)} valid chatText columns")
+                else:
+                    logger.info(f"⚠️  {test_case_id}: No valid chatText data - skipping")
+            
+            logger.info(f"✅ Successfully validated {len(validated_data)} test cases from {len(cleaned_data)} total rows")
+            
+            if not validated_data:
+                logger.warning("❌ No valid test cases found! Check your CSV file content.")
+            
+            return validated_data
+            
+        except FileNotFoundError as e:
+            logger.error(f"❌ CSV file not found: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"❌ Failed to load complaint workflow CSV: {e}")
+            logger.error(f"Current working directory: {os.getcwd()}")
+            logger.error(f"Data directory: {self.data_dir}")
+            raise
+
+
+@pytest.fixture(scope="session") 
+def enhanced_data_loader() -> RobustDataLoader:
+    """Enhanced data loader with robust encoding and validation capabilities."""
+    return RobustDataLoader()
 
 
 # ===== Test Context Fixtures =====
@@ -389,47 +483,59 @@ def pytest_generate_tests(metafunc):
     """Generate parameterized tests from CSV data for complaint workflow."""
     if "test_data_row" in metafunc.fixturenames:
         logger = get_logger(__name__)
-        data_loader = EnhancedDataLoader()
+        data_loader = RobustDataLoader()
         
         try:
-            # Load complaint workflow CSV data
-            csv_file = "complaint_workflow_data.csv"
+            # Load complaint workflow CSV data with robust encoding handling
+            csv_file = "complaint_data.csv"  # Updated to match the actual file name
+            logger.info(f"🔄 Generating tests from CSV file: {csv_file}")
+            
             complaint_data = data_loader.load_complaint_workflow_csv(csv_file)
             
             if complaint_data:
-                # Filter only test cases that have at least one chatText value
-                valid_test_cases = []
+                logger.info(f"📊 Found {len(complaint_data)} valid test cases")
                 
-                for row in complaint_data:
-                    # Check if at least one chatText column has data
-                    has_chat_text = any(
-                        str(row.get(f'chatText{i}', '')).strip() 
-                        for i in range(1, 12)
-                    )
-                    
-                    if has_chat_text:
-                        valid_test_cases.append(row)
-                    else:
-                        logger.info(f"Skipping {row.get('test_case_id', 'unknown')} - no chatText data")
+                # Generate test IDs
+                test_ids = [
+                    row.get("test_case_id", f"TC_{idx:03d}")
+                    for idx, row in enumerate(complaint_data)
+                ]
                 
-                if valid_test_cases:
-                    test_ids = [
-                        row.get("test_case_id", f"TC_{idx:03d}")
-                        for idx, row in enumerate(valid_test_cases)
-                    ]
-                    
-                    logger.info(f"Generated {len(valid_test_cases)} valid test cases for execution")
-                    metafunc.parametrize("test_data_row", valid_test_cases, ids=test_ids)
-                else:
-                    logger.warning("No valid test cases found with chatText data")
-                    metafunc.parametrize("test_data_row", [{}], ids=["NO_VALID_DATA"])
+                # Log test cases being generated
+                for test_id in test_ids:
+                    logger.debug(f"  📋 {test_id}")
+                
+                metafunc.parametrize("test_data_row", complaint_data, ids=test_ids)
+                logger.info(f"✅ Successfully generated {len(complaint_data)} parameterized test cases")
+                
             else:
-                logger.warning("No test data found in CSV file")
-                metafunc.parametrize("test_data_row", [{}], ids=["NO_DATA"])
+                logger.error("❌ No valid test cases found in CSV file")
+                # Create a dummy test that will fail with a clear message
+                dummy_data = [{
+                    "test_case_id": "NO_VALID_DATA",
+                    "error_message": "No valid test data found in CSV file"
+                }]
+                metafunc.parametrize("test_data_row", dummy_data, ids=["NO_VALID_DATA"])
                 
+        except FileNotFoundError as e:
+            logger.error(f"❌ CSV file not found: {e}")
+            # Create error test case
+            error_data = [{
+                "test_case_id": "CSV_FILE_NOT_FOUND", 
+                "error_message": str(e)
+            }]
+            metafunc.parametrize("test_data_row", error_data, ids=["CSV_FILE_NOT_FOUND"])
+            
         except Exception as e:
-            logger.error(f"Failed to load test data: {e}")
-            pytest.fail(f"Test data loading failed: {e}")
+            logger.error(f"❌ Failed to load test data: {e}")
+            logger.error(f"Error type: {type(e).__name__}")
+            
+            # Create error test case with detailed info
+            error_data = [{
+                "test_case_id": "DATA_LOADING_ERROR",
+                "error_message": f"{type(e).__name__}: {e}"
+            }]
+            metafunc.parametrize("test_data_row", error_data, ids=["DATA_LOADING_ERROR"])
 
 
 # ===== Session Finish Hook =====
