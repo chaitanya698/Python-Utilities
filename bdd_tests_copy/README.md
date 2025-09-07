@@ -1,4 +1,4 @@
-    <img width="1378" height="248" alt="image" src="https://github.com/user-attachments/assets/efa26f8c-1450-4014-be7d-79309d89abe2" />
+![Uploading image.png…]()
 
 **Framework Architecture**
 
@@ -32,8 +32,7 @@ bdd_tests/
 │   ├── settings.py                  # Pydantic settings with env support
 │   └── loader.py                    # Config loader with certificate processing
 ├── database/                        # Database integration
-│   └── db_manager.py                # Oracle DB manager with connection pooling
-|   └── db_queries                   # SQL Queries 
+│   └── db_manager.py               # Oracle DB manager with connection pooling
 ├── features/                        # BDD feature files
 │   ├── complaint_capture.feature   # Main complaint workflow tests
 │   ├── dynamic_steps.feature       # Dynamic step execution
@@ -43,11 +42,10 @@ bdd_tests/
 ├── fixtures/                        # Test fixtures
 │   ├── api_service.py              # Playwright API client
 │   └── db_utils.py                 # Database utilities
-├── test_data/                            # Test data
+├── data/                            # Test data
 │   ├── complaint_data.csv          # Main test data
 │   └── complaint_capture_data.csv  # Workflow-specific data
-├── resources/
-|   |──certs                        # Request templates and configs
+├── resources/                       # Request templates and configs
 │   ├── initial_request.json        # API request templates
 │   └── *.json                      # Error scenario templates
 ├── utils/                           # Utility modules
