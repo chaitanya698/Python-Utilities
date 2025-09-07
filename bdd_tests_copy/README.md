@@ -1,668 +1,278 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BDD Test Automation Framework - Architecture</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+    <img width="1378" height="248" alt="image" src="https://github.com/user-attachments/assets/efa26f8c-1450-4014-be7d-79309d89abe2" />
 
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
+**Framework Architecture**
 
-        .container {
-            max-width: 1600px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            padding: 30px;
-            overflow: hidden;
-        }
+<img width="838" height="560" alt="image" src="https://github.com/user-attachments/assets/76c3117b-ae7a-41e0-9f4b-772aa3f6827f" />
+<img width="830" height="673" alt="image" src="https://github.com/user-attachments/assets/ecd8f597-0612-4658-95f4-3abec0f40729" />
+<img width="822" height="655" alt="image" src="https://github.com/user-attachments/assets/76ef6bac-fe52-4a4a-a06e-2f658f3ea6aa" />
 
-        .header {
-            text-align: center;
-            margin-bottom: 40px;
-            padding: 20px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border-radius: 15px;
-        }
+**Core Technologies**
 
-        .header h1 {
-            font-size: 2.5em;
-            margin-bottom: 10px;
-            font-weight: 700;
-        }
+pytest-bdd: BDD test framework with Gherkin scenarios
+Playwright APIRequestContext: High-performance API testing (no browser overhead)
+Pydantic Settings: Configuration management
+Oracle Database: Data validation and persistence testing
+Certificate Authentication: Secure API communication
 
-        .header .subtitle {
-            font-size: 1.2em;
-            opacity: 0.9;
-        }
+Key Features
 
-        .architecture-container {
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 30px;
-        }
+✅ API-Only Testing: Optimized for speed 
+✅ Multi-Environment Support: dev, qa, staging, production
+✅ Data-Driven Testing: CSV-based test data with dynamic execution
+✅ Advanced Error Injection: Comprehensive negative testing scenarios
+✅ Smart Retries: Exponential backoff and custom wait strategies
+✅ Database Validation: Oracle DB integration for end-to-end verification
+✅ Rich Reporting: HTML reports with step-level details and API tracking
+✅ Parallel Execution: Multi-worker test execution
+✅ Certificate-based Auth: Secure API communication
 
-        /* Main Architecture Diagram */
-        .main-diagram {
-            background: #f8f9fa;
-            border-radius: 15px;
-            padding: 30px;
-            border: 2px solid #e9ecef;
-        }
+📁 Project Structure
+bdd_tests/
+├── config/                          # Configuration management
+│   ├── settings.py                  # Pydantic settings with env support
+│   └── loader.py                    # Config loader with certificate processing
+├── database/                        # Database integration
+│   └── db_manager.py                # Oracle DB manager with connection pooling
+|   └── db_queries                   # SQL Queries 
+├── features/                        # BDD feature files
+│   ├── complaint_capture.feature   # Main complaint workflow tests
+│   ├── dynamic_steps.feature       # Dynamic step execution
+│   └── steps/                      # Step definitions
+│       ├── test_complaint_e2e_steps.py
+│       └── test_dynamic_steps.py
+├── fixtures/                        # Test fixtures
+│   ├── api_service.py              # Playwright API client
+│   └── db_utils.py                 # Database utilities
+├── test_data/                            # Test data
+│   ├── complaint_data.csv          # Main test data
+│   └── complaint_capture_data.csv  # Workflow-specific data
+├── resources/
+|   |──certs                        # Request templates and configs
+│   ├── initial_request.json        # API request templates
+│   └── *.json                      # Error scenario templates
+├── utils/                           # Utility modules
+│   ├── data_loader.py              # Robust CSV/JSON loading
+│   ├── error_injector.py           # Error scenario injection
+│   ├── request_response_tracker.py # API call tracking
+│   ├── report_generator.py         # HTML report generation
+│   └── helpers.py                  # Common utilities
+├── reports/                         # Generated reports
+├── logs/                           # Execution logs
+├── test_runner.py                  # Main execution entry point
+├── conftest.py                     # pytest configuration
+├── pytest.ini                     # pytest settings
+└── requirements.txt                # Dependencies
 
-        .diagram-title {
-            text-align: center;
-            font-size: 1.8em;
-            color: #2c3e50;
-            margin-bottom: 30px;
-            font-weight: 600;
-        }
+🚀 **Quick Start**
 
-        .architecture-layers {
-            display: grid;
-            grid-template-rows: repeat(6, auto);
-            gap: 20px;
-        }
+1. Installation
+bash# Clone the repository
+git clone <repository-url>
+cd bdd_tests_copy
 
-        .layer {
-            background: white;
-            border-radius: 12px;
-            padding: 20px;
-            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
-            border-left: 5px solid;
-            position: relative;
-        }
+# Create & Switch to the virtual env
+ a. pythom -m venv venv
+ b. \ven\source\activate 
+  
+# Install dependencies
+pip install -r requirements.txt
 
-        .layer.presentation { border-left-color: #3498db; }
-        .layer.test-execution { border-left-color: #e74c3c; }
-        .layer.api-client { border-left-color: #f39c12; }
-        .layer.data-management { border-left-color: #27ae60; }
-        .layer.infrastructure { border-left-color: #9b59b6; }
-        .layer.reporting { border-left-color: #1abc9c; }
+# Install Playwright (API-only, no browsers needed)
+python -m pip install playwright
+2. Environment Configuration
+Create environment-specific configuration files:
+bash# QA Environment
+cp .env.qa.example .env.qa
 
-        .layer-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 15px;
-        }
+# Configure your .env.qa file
+ENVIRONMENT=qa
+API_BASE_URL=https://qa-api.example.com
+DB_HOST=qa-db.example.com
+DB_USER=qa_user
+DB_PRD=your_password
+CERT_PFX_PATH=certs/qa/certificate.pfx
+CERT_PRD=cert_password
 
-        .layer-title {
-            font-size: 1.3em;
-            font-weight: 600;
-            color: #2c3e50;
-        }
+3. Run Tests
+bash# Run all tests in QA environment
+python test_runner.py --env qa
 
-        .layer-badge {
-            background: #667eea;
-            color: white;
-            padding: 5px 12px;
-            border-radius: 15px;
-            font-size: 0.8em;
-            font-weight: 500;
-        }
+# Run smoke tests with detailed reporting
+python test_runner.py --env qa --tags smoke --verbose
 
-        .layer-components {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-        }
+# Run specific feature with parallel execution
+python test_runner.py --env qa --feature features/complaint_capture.feature --parallel 4
 
-        .component {
-            background: #f1f3f4;
-            padding: 15px;
-            border-radius: 8px;
-            border: 1px solid #e0e0e0;
-            text-align: center;
-            transition: all 0.3s ease;
-            position: relative;
-        }
+# Run with Playwright API debugging
+python test_runner.py --env qa --playwright-debug --verbose -vv
 
-        .component:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.15);
-            background: #e8f4fd;
-        }
+🔄 **Test Execution Flow**
 
-        .component-name {
-            font-weight: 600;
-            color: #2c3e50;
-            margin-bottom: 8px;
-            font-size: 1em;
-        }
+1. Framework Initialization
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   Environment   │───▶│   Configuration  │───▶│   API Client    │
+│   Selection     │    │   Loading        │    │   Initialize    │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
+                              │
+                              ▼
+                      ┌──────────────────┐
+                      │   Certificate    │
+                      │   Processing     │
+                      └──────────────────┘
+2. Test Data Flow
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   CSV Data      │───▶│   Data           │───▶│   Test          │
+│   Loading       │    │   Validation     │    │   Generation    │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
+                              │
+                              ▼
+                      ┌──────────────────┐
+                      │   Dynamic Step   │
+                      │   Execution      │
+                      └──────────────────┘
+3. API Interaction Flow
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   Initial       │───▶│   Workflow       │───▶│   Database      │
+│   Request       │    │   Steps          │    │   Validation    │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
+        │                       │                       │
+        ▼                       ▼                       ▼
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   Conversation  │    │   Step-by-Step   │    │   Complaint     │
+│   ID Generated  │    │   API Calls      │    │   Persisted     │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
 
-        .component-tech {
-            font-size: 0.85em;
-            color: #7f8c8d;
-            font-style: italic;
-        }
 
-        .component-description {
-            font-size: 0.8em;
-            color: #555;
-            margin-top: 5px;
-            line-height: 1.3;
-        }
+📊 **Test Execution Details**
 
-        /* Flow Arrows */
-        .flow-arrow {
-            position: absolute;
-            right: 20px;
-            top: 50%;
-            transform: translateY(-50%);
-            font-size: 2em;
-            color: #667eea;
-            opacity: 0.7;
-        }
+**Data-Driven Testing**
+Tests are generated from CSV file.
 
-        /* Data Flow Section */
-        .data-flow {
-            background: white;
-            border-radius: 15px;
-            padding: 30px;
-            border: 2px solid #e9ecef;
-            margin-top: 30px;
-        }
+**Dynamic Step Execution**
 
-        .flow-title {
-            text-align: center;
-            font-size: 1.6em;
-            color: #2c3e50;
-            margin-bottom: 25px;
-            font-weight: 600;
-        }
+The framework dynamically executes steps based on available data:
+python# Only execute steps that have valid data in CSV for field_name in WORKFLOW_STEPS_ORDER:
+    if is_valid_value(csv_data.get(field_name)):
+        execute_workflow_step(test_context, field_name)
+        
+**Error Injection**
+Comprehensive negative testing with built-in error scenarios:
+python# Available error scenarios
+error_scenarios = [
+    'missing_conversation_id',
+    'invalid_request_type', 
+    'empty_payload',
+    'invalid_date_format',
+    'service_unavailable'
+]
 
-        .flow-steps {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 20px;
-            align-items: center;
-        }
+📈 **Reporting & Analytics**
+HTML Reports
+Rich HTML reports with:
 
-        .flow-step {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 20px;
-            border-radius: 12px;
-            text-align: center;
-            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.3);
-            position: relative;
-        }
+**Executive summary with key metrics**
+Test results with expandable step details
+API request/response tracking
+Performance metrics
+Environment information
 
-        .flow-step::after {
-            content: '→';
-            position: absolute;
-            right: -25px;
-            top: 50%;
-            transform: translateY(-50%);
-            font-size: 1.5em;
-            color: #667eea;
-            font-weight: bold;
-        }
+**Step-Level Tracking**
+Every BDD step is tracked with:
 
-        .flow-step:last-child::after {
-            display: none;
-        }
+Execution status (passed/failed/skipped)
+Request/response details
+Timing information
+Error details (if any)
 
-        .step-number {
-            background: rgba(255, 255, 255, 0.2);
-            width: 30px;
-            height: 30px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin: 0 auto 10px;
-            font-weight: bold;
-        }
+**API Call Tracking**
+All API interactions are logged:
 
-        .step-title {
-            font-weight: 600;
-            margin-bottom: 8px;
-        }
+Request headers and payload
+Response status and data
+Correlation IDs for tracing
+Performance metrics
 
-        .step-description {
-            font-size: 0.9em;
-            opacity: 0.9;
-            line-height: 1.4;
-        }
+🛠️ **Configuration Options**
+Command Line Options
+bashpython test_runner.py [OPTIONS]
 
-        /* Technology Stack */
-        .tech-stack {
-            background: white;
-            border-radius: 15px;
-            padding: 30px;
-            border: 2px solid #e9ecef;
-            margin-top: 30px;
-        }
+**Options**:
+  --env {dev,qa,staging,production}  Environment to test against
+  --tags TEXT                        Pytest markers (e.g., 'smoke', 'regression')
+  --feature TEXT                     Specific feature file to run
+  --parallel N                       Run tests in parallel with N workers
+  --api-timeout SECONDS             Override API timeout
+  --api-retry-count COUNT           Override retry count
+  --playwright-debug                 Enable Playwright API debugging
+  --verbose, -v                     Increase verbosity (-vv for more)
+  --max-failures N                   Stop after N failures
+  --dry-run                         Show what would run without executing
 
-        .tech-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-            gap: 20px;
-        }
+**Environment Variables**
+ENVIRONMENT=qa
+API_BASE_URL=https://api.example.com
+API_TIMEOUT=45
+API_RETRY_COUNT=3
 
-        .tech-category {
-            background: #f8f9fa;
-            padding: 20px;
-            border-radius: 10px;
-            border: 1px solid #e9ecef;
-        }
+# Database Configuration  
+DB_HOST=DB_HOST
+DB_PORT=DB_PORT
+DB_USER=DB_USER
+DB_PRD=DB_PRD
+DB_SERVICE_NAME=DB_SERVICE_NAME
 
-        .tech-category h4 {
-            color: #2c3e50;
-            margin-bottom: 15px;
-            font-size: 1.2em;
-            border-bottom: 2px solid #667eea;
-            padding-bottom: 8px;
-        }
+# Certificate Configuration
+CERT_PFX_PATH=certs/certificate.pfx
+CERT_PRD=cert_password
 
-        .tech-list {
-            list-style: none;
-        }
+# Logging Configuration
+LOG_LEVEL=INFO
+ENABLE_DETAILED_LOGGING=true
+VERIFY_SSL=true
 
-        .tech-list li {
-            padding: 8px 0;
-            color: #495057;
-            border-bottom: 1px solid #e9ecef;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
+🔧 **Advanced Features**
+Smart Retries
+Exponential backoff strategy
+Configurable retry counts
+Custom wait strategies for different scenarios
 
-        .tech-list li:last-child {
-            border-bottom: none;
-        }
+**Certificate Management**
 
-        .tech-badge {
-            background: #667eea;
-            color: white;
-            padding: 3px 8px;
-            border-radius: 10px;
-            font-size: 0.75em;
-        }
+Automatic PFX to PEM conversion
+Secure credential handling
+Multi-environment certificate support
 
-        /* Key Features */
-        .features-section {
-            background: white;
-            border-radius: 15px;
-            padding: 30px;
-            border: 2px solid #e9ecef;
-            margin-top: 30px;
-        }
+**Database Integration**
 
-        .features-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 20px;
-        }
+Oracle connection pooling
+Transaction management
+Query result validation
+Cleanup utilities
 
-        .feature-card {
-            background: #f8f9fa;
-            padding: 20px;
-            border-radius: 10px;
-            border: 1px solid #e9ecef;
-            text-align: center;
-        }
+**Parallel Execution**
 
-        .feature-icon {
-            font-size: 2.5em;
-            margin-bottom: 15px;
-            color: #667eea;
-        }
+Multi-worker test execution
+Load balancing with worksteal distribution
+Resource isolation between workers
 
-        .feature-title {
-            font-weight: 600;
-            color: #2c3e50;
-            margin-bottom: 10px;
-        }
+📋 **Best Practices**
 
-        .feature-description {
-            color: #6c757d;
-            font-size: 0.9em;
-            line-height: 1.4;
-        }
+**Test Data Management**
 
-        /* Responsive Design */
-        @media (max-width: 768px) {
-            .header h1 { font-size: 2em; }
-            .layer-components { grid-template-columns: 1fr; }
-            .flow-steps { grid-template-columns: 1fr; }
-            .flow-step::after { display: none; }
-            .tech-grid { grid-template-columns: 1fr; }
-            .features-grid { grid-template-columns: 1fr; }
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🏗️ BDD Test Automation Framework</h1>
-            <div class="subtitle">Complaint AI Chatbot | Playwright + pytest-bdd Architecture</div>
-        </div>
+Use meaningful test case IDs
+Validate CSV data before execution
+Separate positive and negative test data
 
-        <div class="architecture-container">
-            <!-- Main Architecture Diagram -->
-            <div class="main-diagram">
-                <div class="diagram-title">📊 Framework Architecture Layers</div>
-                
-                <div class="architecture-layers">
-                    <!-- Layer 1: Presentation & Configuration -->
-                    <div class="layer presentation">
-                        <div class="layer-header">
-                            <div class="layer-title">🎯 Presentation & Configuration Layer</div>
-                            <div class="layer-badge">Entry Point</div>
-                        </div>
-                        <div class="layer-components">
-                            <div class="component">
-                                <div class="component-name">Test Runner</div>
-                                <div class="component-tech">test_runner.py</div>
-                                <div class="component-description">CLI interface, environment selection, parallel execution</div>
-                            </div>
-                            <div class="component">
-                                <div class="component-name">Configuration</div>
-                                <div class="component-tech">Pydantic Settings</div>
-                                <div class="component-description">Multi-environment configs, certificate processing</div>
-                            </div>
-                            <div class="component">
-                                <div class="component-name">Environment Setup</div>
-                                <div class="component-tech">.env files</div>
-                                <div class="component-description">dev, qa, staging, production settings</div>
-                            </div>
-                        </div>
-                        <div class="flow-arrow">⬇️</div>
-                    </div>
+**Error Handling**
 
-                    <!-- Layer 2: Test Execution Engine -->
-                    <div class="layer test-execution">
-                        <div class="layer-header">
-                            <div class="layer-title">🚀 Test Execution Engine</div>
-                            <div class="layer-badge">BDD Core</div>
-                        </div>
-                        <div class="layer-components">
-                            <div class="component">
-                                <div class="component-name">BDD Features</div>
-                                <div class="component-tech">Gherkin (.feature)</div>
-                                <div class="component-description">complaint_capture.feature, dynamic_steps.feature</div>
-                            </div>
-                            <div class="component">
-                                <div class="component-name">Step Definitions</div>
-                                <div class="component-tech">pytest-bdd</div>
-                                <div class="component-description">Given/When/Then step implementations</div>
-                            </div>
-                            <div class="component">
-                                <div class="component-name">Test Context</div>
-                                <div class="component-tech">pytest fixtures</div>
-                                <div class="component-description">Shared test state, correlation tracking</div>
-                            </div>
-                            <div class="component">
-                                <div class="component-name">Dynamic Execution</div>
-                                <div class="component-tech">CSV-driven</div>
-                                <div class="component-description">Conditional step execution based on data</div>
-                            </div>
-                        </div>
-                        <div class="flow-arrow">⬇️</div>
-                    </div>
+Implement comprehensive error scenarios
+Use correlation IDs for request tracing
+Log detailed error information
 
-                    <!-- Layer 3: API Client Layer -->
-                    <div class="layer api-client">
-                        <div class="layer-header">
-                            <div class="layer-title">🔧 API Client Layer</div>
-                            <div class="layer-badge">Playwright API</div>
-                        </div>
-                        <div class="layer-components">
-                            <div class="component">
-                                <div class="component-name">API Client</div>
-                                <div class="component-tech">Playwright APIRequestContext</div>
-                                <div class="component-description">High-performance API testing, no browser overhead</div>
-                            </div>
-                            <div class="component">
-                                <div class="component-name">Certificate Auth</div>
-                                <div class="component-tech">PFX → PEM conversion</div>
-                                <div class="component-description">Secure mTLS authentication</div>
-                            </div>
-                            <div class="component">
-                                <div class="component-name">Request Tracking</div>
-                                <div class="component-tech">Correlation IDs</div>
-                                <div class="component-description">Full request/response logging</div>
-                            </div>
-                            <div class="component">
-                                <div class="component-name">Smart Retries</div>
-                                <div class="component-tech">Exponential backoff</div>
-                                <div class="component-description">Configurable retry strategies</div>
-                            </div>
-                            <div class="component">
-                                <div class="component-name">Error Injection</div>
-                                <div class="component-tech">Negative testing</div>
-                                <div class="component-description">20+ error scenarios for comprehensive testing</div>
-                            </div>
-                        </div>
-                        <div class="flow-arrow">⬇️</div>
-                    </div>
+**Trouble Shooting & Debugging**
 
-                    <!-- Layer 4: Data Management -->
-                    <div class="layer data-management">
-                        <div class="layer-header">
-                            <div class="layer-title">📊 Data Management Layer</div>
-                            <div class="layer-badge">Data-Driven</div>
-                        </div>
-                        <div class="layer-components">
-                            <div class="component">
-                                <div class="component-name">CSV Data Loader</div>
-                                <div class="component-tech">Robust encoding</div>
-                                <div class="component-description">UTF-8/BOM handling, validation</div>
-                            </div>
-                            <div class="component">
-                                <div class="component-name">Test Data</div>
-                                <div class="component-tech">complaint_data.csv</div>
-                                <div class="component-description">Test cases, workflow data, expected results</div>
-                            </div>
-                            <div class="component">
-                                <div class="component-name">Request Templates</div>
-                                <div class="component-tech">JSON templates</div>
-                                <div class="component-description">API request patterns, error scenarios</div>
-                            </div>
-                            <div class="component">
-                                <div class="component-name">Data Validation</div>
-                                <div class="component-tech">Pydantic models</div>
-                                <div class="component-description">Schema validation, type checking</div>
-                            </div>
-                        </div>
-                        <div class="flow-arrow">⬇️</div>
-                    </div>
+Check the logs in the logs/ directory
+Review HTML reports for detailed execution information
+Use --playwright-debug for API troubleshooting
+Enable verbose logging with -vv for detailed output
 
-                    <!-- Layer 5: Infrastructure -->
-                    <div class="layer infrastructure">
-                        <div class="layer-header">
-                            <div class="layer-title">🗄️ Infrastructure Layer</div>
-                            <div class="layer-badge">Persistence</div>
-                        </div>
-                        <div class="layer-components">
-                            <div class="component">
-                                <div class="component-name">Database Manager</div>
-                                <div class="component-tech">Oracle + SQLAlchemy</div>
-                                <div class="component-description">Connection pooling, transaction management</div>
-                            </div>
-                            <div class="component">
-                                <div class="component-name">DB Utilities</div>
-                                <div class="component-tech">Query helpers</div>
-                                <div class="component-description">Chat history, complaint verification</div>
-                            </div>
-                            <div class="component">
-                                <div class="component-name">Target APIs</div>
-                                <div class="component-tech">Complaint AI Service</div>
-                                <div class="component-description">Chatbot API, LLM service integration</div>
-                            </div>
-                            <div class="component">
-                                <div class="component-name">External Services</div>
-                                <div class="component-tech">HR/Customer lookup</div>
-                                <div class="component-description">Integration validation</div>
-                            </div>
-                        </div>
-                        <div class="flow-arrow">⬇️</div>
-                    </div>
-
-                    <!-- Layer 6: Reporting & Analytics -->
-                    <div class="layer reporting">
-                        <div class="layer-header">
-                            <div class="layer-title">📈 Reporting & Analytics Layer</div>
-                            <div class="layer-badge">Insights</div>
-                        </div>
-                        <div class="layer-components">
-                            <div class="component">
-                                <div class="component-name">HTML Reports</div>
-                                <div class="component-tech">Rich dashboards</div>
-                                <div class="component-description">Executive summary, step-level details</div>
-                            </div>
-                            <div class="component">
-                                <div class="component-name">API Tracking</div>
-                                <div class="component-tech">Request/response logs</div>
-                                <div class="component-description">Performance metrics, correlation tracing</div>
-                            </div>
-                            <div class="component">
-                                <div class="component-name">Logging System</div>
-                                <div class="component-tech">Structured logging</div>
-                                <div class="component-description">Debug, info, error levels with rotation</div>
-                            </div>
-                            <div class="component">
-                                <div class="component-name">Metrics & KPIs</div>
-                                <div class="component-tech">Test analytics</div>
-                                <div class="component-description">Pass rates, performance trends</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Data Flow Diagram -->
-            <div class="data-flow">
-                <div class="flow-title">🔄 Test Execution Data Flow</div>
-                <div class="flow-steps">
-                    <div class="flow-step">
-                        <div class="step-number">1</div>
-                        <div class="step-title">Environment Setup</div>
-                        <div class="step-description">Load configs, process certificates, initialize API client</div>
-                    </div>
-                    <div class="flow-step">
-                        <div class="step-number">2</div>
-                        <div class="step-title">Data Loading</div>
-                        <div class="step-description">Parse CSV test data, validate fields, generate test cases</div>
-                    </div>
-                    <div class="flow-step">
-                        <div class="step-number">3</div>
-                        <div class="step-title">Test Generation</div>
-                        <div class="step-description">Dynamic parametrization, BDD scenario creation</div>
-                    </div>
-                    <div class="flow-step">
-                        <div class="step-number">4</div>
-                        <div class="step-title">API Execution</div>
-                        <div class="step-description">Initiate chat, execute workflow steps, track responses</div>
-                    </div>
-                    <div class="flow-step">
-                        <div class="step-number">5</div>
-                        <div class="step-title">Validation</div>
-                        <div class="step-description">Verify API responses, check database persistence</div>
-                    </div>
-                    <div class="flow-step">
-                        <div class="step-number">6</div>
-                        <div class="step-title">Reporting</div>
-                        <div class="step-description">Generate HTML reports, log results, cleanup</div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Technology Stack -->
-            <div class="tech-stack">
-                <div class="flow-title">🛠️ Technology Stack</div>
-                <div class="tech-grid">
-                    <div class="tech-category">
-                        <h4>🧪 Testing Framework</h4>
-                        <ul class="tech-list">
-                            <li>pytest-bdd <span class="tech-badge">Core</span></li>
-                            <li>Playwright APIRequestContext <span class="tech-badge">API</span></li>
-                            <li>Gherkin <span class="tech-badge">BDD</span></li>
-                            <li>pytest fixtures <span class="tech-badge">DI</span></li>
-                        </ul>
-                    </div>
-                    <div class="tech-category">
-                        <h4>⚙️ Configuration & Data</h4>
-                        <ul class="tech-list">
-                            <li>Pydantic Settings <span class="tech-badge">Config</span></li>
-                            <li>CSV/JSON loaders <span class="tech-badge">Data</span></li>
-                            <li>Environment configs <span class="tech-badge">Env</span></li>
-                            <li>Certificate processing <span class="tech-badge">Auth</span></li>
-                        </ul>
-                    </div>
-                    <div class="tech-category">
-                        <h4>🗄️ Database & Persistence</h4>
-                        <ul class="tech-list">
-                            <li>Oracle Database <span class="tech-badge">DB</span></li>
-                            <li>SQLAlchemy <span class="tech-badge">ORM</span></li>
-                            <li>Connection pooling <span class="tech-badge">Pool</span></li>
-                            <li>Transaction management <span class="tech-badge">TX</span></li>
-                        </ul>
-                    </div>
-                    <div class="tech-category">
-                        <h4>📊 Reporting & Analytics</h4>
-                        <ul class="tech-list">
-                            <li>HTML reports <span class="tech-badge">UI</span></li>
-                            <li>JSON reporting <span class="tech-badge">API</span></li>
-                            <li>Structured logging <span class="tech-badge">Logs</span></li>
-                            <li>Performance metrics <span class="tech-badge">KPI</span></li>
-                        </ul>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Key Features -->
-            <div class="features-section">
-                <div class="flow-title">✨ Key Framework Features</div>
-                <div class="features-grid">
-                    <div class="feature-card">
-                        <div class="feature-icon">🚀</div>
-                        <div class="feature-title">High Performance</div>
-                        <div class="feature-description">API-only testing with Playwright, no browser overhead, parallel execution support</div>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-icon">📊</div>
-                        <div class="feature-title">Data-Driven</div>
-                        <div class="feature-description">CSV-based test data with dynamic step execution and comprehensive validation</div>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-icon">🔧</div>
-                        <div class="feature-title">Smart Error Testing</div>
-                        <div class="feature-description">20+ built-in error injection scenarios for comprehensive negative testing</div>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-icon">🔒</div>
-                        <div class="feature-title">Enterprise Security</div>
-                        <div class="feature-description">Certificate-based authentication, secure credential handling</div>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-icon">📈</div>
-                        <div class="feature-title">Rich Reporting</div>
-                        <div class="feature-description">HTML dashboards with step-level details, API tracking, performance metrics</div>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-icon">🌍</div>
-                        <div class="feature-title">Multi-Environment</div>
-                        <div class="feature-description">dev, qa, staging, production configs with environment-specific settings</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</body>
-</html>
