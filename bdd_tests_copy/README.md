@@ -1,4 +1,4 @@
-![Uploading image.png…]()
+<img width="719" height="59" alt="image" src="https://github.com/user-attachments/assets/9dfa1613-50b0-4709-913a-997678f1b2e5" />
 
 **Framework Architecture**
 
