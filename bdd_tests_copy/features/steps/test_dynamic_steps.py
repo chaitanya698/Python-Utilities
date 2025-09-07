@@ -167,16 +167,31 @@ def validate_step_response(test_context: Dict[str, Any], field_name: str) -> boo
         logger.warning(f"⚠️ No expected response mapping for field: {field_name}")
         return True
     
-    # Get expected value from CSV
+    # Get the JSON key from CSV (e.g., "When_Complaint_Received")
     csv_data = test_context.get('csv_data', {})
-    expected_value_from_csv = csv_data.get(expected_key, '')
+    json_key_from_csv = csv_data.get(expected_key, '').strip()
     
-    # Get expected value from JSON if available
+    # Get expected responses JSON
     expected_responses_json = test_context.get('expected_responses_json', {})
-    expected_value_from_json = expected_responses_json.get(expected_key, '')
     
-    # Use CSV value if available, otherwise use JSON
-    expected_value = expected_value_from_csv if is_valid_value(expected_value_from_csv) else expected_value_from_json
+    # Determine the actual expected text
+    expected_value = None
+    
+    if is_valid_value(json_key_from_csv):
+        # CSV contains a key that maps to JSON
+        if json_key_from_csv in expected_responses_json:
+            # Use the JSON value for this key
+            expected_value = expected_responses_json.get(json_key_from_csv)
+            logger.debug(f"Using JSON mapping: {json_key_from_csv} -> {expected_value[:50] if expected_value else 'None'}...")
+        else:
+            # If not found in JSON, treat the CSV value as literal expected text
+            expected_value = json_key_from_csv
+            logger.debug(f"JSON key '{json_key_from_csv}' not found, using as literal text")
+    else:
+        # No CSV value, try to use default from JSON using the expected key itself
+        expected_value = expected_responses_json.get(expected_key, '')
+        if expected_value:
+            logger.debug(f"Using default JSON value for {expected_key}")
     
     if not expected_value:
         logger.info(f"📋 No expected response defined for {field_name}")
@@ -198,7 +213,8 @@ def validate_step_response(test_context: Dict[str, Any], field_name: str) -> boo
         test_context['validation_failures'].append({
             'field': field_name,
             'expected': expected_value,
-            'actual': actual_text
+            'actual': actual_text,
+            'json_key': json_key_from_csv if is_valid_value(json_key_from_csv) else None
         })
         return False
 
